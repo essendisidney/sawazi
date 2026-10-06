@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from sawazi import auth
 from sawazi.db import Base, get_session
-from sawazi.models import ExceptionItem, Institution, StaffSession, StaffUser
+from sawazi.models import ApiKey, ExceptionItem, Institution, StaffSession, StaffUser
 
 PK = {"X-API-Key": "platform-test-key"}
 PW = "correct-horse-1"
@@ -240,3 +240,105 @@ def test_platform_endpoints_need_platform_key(env, monkeypatch):
 
     monkeypatch.delenv("SAWAZI_API_KEY")
     assert c.post("/institutions", json={"name": "Y"}, headers=PK).status_code == 503  # never open by default
+
+
+# ---------------------------------------------------------------- institution API keys
+
+def make_key(c, admin, role="accountant", name="core banking sync", iid=1):
+    r = c.post(f"/institutions/{iid}/api-keys", headers=admin, json={"name": name, "role": role})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_api_key_created_once_and_stored_hashed(env):
+    c, Session = env
+    admin = login(c, "admin@a.test")
+    k = make_key(c, admin)
+    assert k["key"].startswith("swz_") and k["prefix"] == k["key"][:12]
+    listed = c.get("/institutions/1/api-keys", headers=admin).json()
+    assert len(listed) == 1 and "key" not in listed[0] and listed[0]["last_used_at"] is None
+    with Session() as s:
+        stored = s.scalar(select(ApiKey))
+        assert stored.key_hash != k["key"] and k["key"] not in stored.key_hash
+        assert stored.created_by_user_id == c.get("/auth/me", headers=admin).json()["id"]
+
+
+@pytest.mark.parametrize("role", ["accountant", "credit_officer", "viewer"])
+def test_api_key_follows_its_role(env, role):
+    c, _ = env
+    key = {"Authorization": f"Bearer {make_key(c, login(c, 'admin@a.test'), role=role)['key']}"}
+    for method, path, allowed in ROLE_CASES:
+        r = getattr(c, method)(path, headers=key)
+        assert r.status_code == (200 if role in allowed else 403), (role, path, r.status_code)
+
+
+def test_api_key_cannot_do_human_only_actions(env):
+    c, Session = env
+    admin = login(c, "admin@a.test")
+    key = {"Authorization": f"Bearer {make_key(c, admin, role='accountant')['key']}"}
+    r = c.post("/exceptions/1/resolve", headers=key, json={"note": "x"})
+    assert r.status_code == 403 and "staff member" in r.json()["detail"]
+    with Session() as s:
+        assert s.get(ExceptionItem, 1).status == "open"
+    assert c.post("/institutions/1/api-keys", headers=key, json={"name": "n", "role": "viewer"}).status_code == 403
+    assert c.get("/institutions/1/users", headers=key).status_code == 403
+    # staff-only endpoints do not accept a key as a login
+    assert c.get("/auth/me", headers=key).status_code == 401
+    assert c.post("/auth/logout", headers=key).status_code == 401
+
+
+def test_api_key_cannot_be_admin(env):
+    c, _ = env
+    admin = login(c, "admin@a.test")
+    assert c.post("/institutions/1/api-keys", headers=admin, json={"name": "n", "role": "admin"}).status_code == 422
+
+
+def test_only_admins_manage_api_keys(env):
+    c, _ = env
+    acc = login(c, "accountant@a.test")
+    assert c.post("/institutions/1/api-keys", headers=acc, json={"name": "n", "role": "viewer"}).status_code == 403
+    assert c.get("/institutions/1/api-keys", headers=acc).status_code == 403
+
+
+def test_api_key_scoped_to_its_institution(env):
+    c, _ = env
+    a_key = {"Authorization": f"Bearer {make_key(c, login(c, 'admin@a.test'))['key']}"}
+    b_key = make_key(c, login(c, "admin@b.test"), iid=2)
+    assert c.get("/institutions/2/dashboard", headers=a_key).status_code == 404
+    assert c.post("/institutions/2/match", headers=a_key).status_code == 404
+    # A's admin can neither see nor revoke B's key
+    admin_a = login(c, "admin@a.test")
+    assert c.get("/institutions/2/api-keys", headers=admin_a).status_code == 404
+    assert c.delete(f"/institutions/1/api-keys/{b_key['id']}", headers=admin_a).status_code == 404
+    assert c.delete(f"/institutions/2/api-keys/{b_key['id']}", headers=admin_a).status_code == 404
+    b_auth = {"Authorization": f"Bearer {b_key['key']}"}
+    assert c.get("/institutions/2/dashboard", headers=b_auth).status_code == 200
+
+
+def test_revoked_or_unknown_key_rejected(env):
+    c, _ = env
+    admin = login(c, "admin@a.test")
+    k = make_key(c, admin)
+    key = {"Authorization": f"Bearer {k['key']}"}
+    assert c.get("/institutions/1/dashboard", headers=key).status_code == 200
+    r = c.delete(f"/institutions/1/api-keys/{k['id']}", headers=admin)
+    assert r.status_code == 200 and r.json()["revoked_at"]
+    assert c.get("/institutions/1/dashboard", headers=key).status_code == 401
+    assert c.get("/institutions/1/dashboard", headers={"Authorization": "Bearer swz_madeup"}).status_code == 401
+    assert len(c.get("/institutions/1/api-keys", headers=admin).json()) == 1  # kept for traceability
+
+
+def test_api_key_survives_creator_deactivation_and_records_use(env):
+    c, Session = env
+    admin = login(c, "admin@a.test")
+    with Session() as s:
+        second = StaffUser(institution_id=1, email="admin2@a.test", name="Admin 2", role="admin",
+                           password_hash=auth.hash_password(PW), is_active=True)
+        s.add(second)
+        s.commit()
+        second_id = second.id
+    k = make_key(c, login(c, "admin2@a.test"))
+    assert c.patch(f"/institutions/1/users/{second_id}", headers=admin, json={"is_active": False}).status_code == 200
+    key = {"Authorization": f"Bearer {k['key']}"}
+    assert c.get("/institutions/1/dashboard", headers=key).status_code == 200  # belongs to the institution
+    assert c.get("/institutions/1/api-keys", headers=admin).json()[0]["last_used_at"]

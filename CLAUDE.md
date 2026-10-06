@@ -21,7 +21,7 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 - Phase 4: cross-institution network (guarantee exposure, sector benchmarks), MFI group lending, regional
 
 ## Phase 1 — what is left, in this order
-1. Staff auth: users, roles, per-institution scoping DONE (`sawazi/auth.py`, role matrix in `PERMISSIONS`). Left: API keys per institution
+1. Staff auth DONE: users, roles, per-institution scoping, per-institution API keys (`sawazi/auth.py`, role matrix in `PERMISSIONS`, human-only actions in `HUMAN_ONLY`)
 2. Audit log: every manual action (clearing suspense, resolving exceptions, sending reminders) recorded with who/when/before/after
 3. SMS sending via Africa's Talking (sandbox first), delivery status callbacks, opt-out handling, send only on staff approval
 4. M-Pesa Daraja C2B validation/confirmation callbacks for real-time matching (statements stay as fallback)
@@ -47,7 +47,7 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 - `sawazi/engine/checkoff.py` check-off schedule vs remittance reconciliation
 - `sawazi/engine/collections.py` arrears ranking, drafted messages, PAR
 - `sawazi/api.py` FastAPI app
-- `sawazi/auth.py` staff login (scrypt passwords, hashed opaque session tokens), roles, institution scoping. Every new endpoint needs `Depends(require(...))`
+- `sawazi/auth.py` staff login (scrypt passwords, hashed opaque session tokens), roles, institution scoping. Every new endpoint needs `Depends(require(...))`; it returns a `Principal` (staff user or API key). Actions that move money to a member or change access go in `HUMAN_ONLY`
 - `scripts/` fictional sample data generator (`make_sample_data.py`, includes an answer key `mpesa_truth.csv`), demo run, dashboard build
 - `tests/` pytest
 

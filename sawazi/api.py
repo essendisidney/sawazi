@@ -17,13 +17,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import auth
-from .auth import ROLES, require
+from .auth import API_KEY_ROLES, ROLES, Principal, require
 from .db import get_session, init_db
 from .engine.checkoff import reconcile_checkoff
 from .engine.collections import build_queue, portfolio_at_risk
 from .engine.matching import allocate, run_matching
 from .importers import sources
-from .models import (Allocation, ExceptionItem, Institution, Loan, Member, Reminder, StaffSession, StaffUser,
+from .models import (Allocation, ApiKey, ExceptionItem, Institution, Loan, Member, Reminder, StaffSession, StaffUser,
                      Transaction)
 
 @asynccontextmanager
@@ -155,7 +155,7 @@ def create_user(institution_id: int, body: StaffIn, s: Session = Depends(get_ses
 
 @app.patch("/institutions/{institution_id}/users/{user_id}", tags=["users"])
 def update_user(institution_id: int, user_id: int, body: StaffPatch, s: Session = Depends(get_session),
-                admin: StaffUser = Depends(require("manage_users"))):
+                admin: Principal = Depends(require("manage_users"))):
     u = s.get(StaffUser, user_id)
     if not u or u.institution_id != institution_id:
         raise HTTPException(404, "user not found")
@@ -174,6 +174,49 @@ def update_user(institution_id: int, user_id: int, body: StaffPatch, s: Session 
         auth.revoke_sessions(s, u.id)  # changes take effect now, not at token expiry
     s.commit()
     return _user_out(u)
+
+
+# ---------------------------------------------------------------- institution API keys
+
+class ApiKeyIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100, description="what uses it, e.g. 'core banking nightly sync'")
+    role: str = Field(pattern="^(" + "|".join(API_KEY_ROLES) + ")$")
+
+
+def _key_out(k: ApiKey) -> dict:
+    return {"id": k.id, "name": k.name, "role": k.role, "prefix": k.prefix, "created_at": k.created_at,
+            "created_by_user_id": k.created_by_user_id, "last_used_at": k.last_used_at, "revoked_at": k.revoked_at}
+
+
+@app.get("/institutions/{institution_id}/api-keys", dependencies=[Depends(require("manage_users"))], tags=["api keys"])
+def list_api_keys(institution_id: int, s: Session = Depends(get_session)):
+    keys = s.scalars(select(ApiKey).where(ApiKey.institution_id == institution_id).order_by(ApiKey.created_at.desc()))
+    return [_key_out(k) for k in keys]
+
+
+@app.post("/institutions/{institution_id}/api-keys", tags=["api keys"])
+def create_api_key(institution_id: int, body: ApiKeyIn, s: Session = Depends(get_session),
+                   admin: Principal = Depends(require("manage_users"))):
+    """The full key is returned once, here. Sawazi only keeps its hash, so store it safely now."""
+    raw = auth.new_api_key()
+    k = ApiKey(institution_id=institution_id, name=body.name, role=body.role, prefix=raw[:12],
+               key_hash=auth.token_hash(raw), created_by_user_id=admin.id, created_at=auth.utcnow())
+    s.add(k)
+    s.commit()
+    return {**_key_out(k), "key": raw}
+
+
+@app.delete("/institutions/{institution_id}/api-keys/{key_id}", tags=["api keys"],
+            dependencies=[Depends(require("manage_users"))])
+def revoke_api_key(institution_id: int, key_id: int, s: Session = Depends(get_session)):
+    """Revoke at once. The record is kept so past use stays traceable."""
+    k = s.get(ApiKey, key_id)
+    if not k or k.institution_id != institution_id:
+        raise HTTPException(404, "API key not found")
+    if not k.revoked_at:
+        k.revoked_at = auth.utcnow()
+        s.commit()
+    return _key_out(k)
 
 
 IMPORTERS = {
@@ -271,7 +314,7 @@ class ResolveIn(BaseModel):
 
 @app.post("/exceptions/{exception_id}/resolve")
 def resolve(exception_id: int, body: ResolveIn, s: Session = Depends(get_session),
-            user: StaffUser = Depends(require("resolve"))):
+            user: Principal = Depends(require("resolve"))):
     e = s.get(ExceptionItem, exception_id)
     if not e or e.status != "open" or e.institution_id != user.institution_id:
         raise HTTPException(404, "open exception not found")

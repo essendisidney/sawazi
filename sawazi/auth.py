@@ -6,6 +6,10 @@ change that institution's data; asking for another institution's data returns
 
 Tokens are random and opaque. Only their SHA-256 is stored, so logout and
 deactivation take effect immediately and a leaked database holds no usable tokens.
+
+Institutions can also create API keys for machine access. They use the same
+`Authorization: Bearer` header, start with `swz_`, carry a non-admin role, and
+can never do the human-only actions (clearing suspense, managing staff or keys).
 """
 from __future__ import annotations
 
@@ -13,6 +17,7 @@ import hashlib
 import hmac
 import os
 import secrets
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, Header, HTTPException
@@ -20,7 +25,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from .db import get_session
-from .models import StaffSession, StaffUser
+from .models import ApiKey, StaffSession, StaffUser
 
 ROLES = ("admin", "accountant", "credit_officer", "viewer")
 SESSION_HOURS = 12
@@ -33,8 +38,13 @@ PERMISSIONS: dict[str, set[str]] = {
     "reconcile": {"admin", "accountant"},                          # imports, matching, check-off
     "resolve": {"admin", "accountant"},                            # clear suspense, close flags
     "export": {"admin", "accountant"},                             # postings file (member-level money)
-    "manage_users": {"admin"},
+    "manage_users": {"admin"},                                     # staff and API keys
 }
+# A person must do these, never a machine: they move money to a member or change who has access.
+HUMAN_ONLY = {"resolve", "manage_users"}
+API_KEY_ROLES = ("accountant", "credit_officer", "viewer")
+API_KEY_PREFIX = "swz_"
+_LAST_USED_EVERY = timedelta(minutes=1)  # don't write to the database on every request
 
 # scrypt cost: ~16 MB memory, well under a second on a small VPS.
 _SCRYPT = {"n": 2**14, "r": 8, "p": 1}
@@ -74,7 +84,7 @@ def check_password_policy(password: str) -> None:
 
 # ---------------------------------------------------------------- sessions
 
-def _token_hash(token: str) -> str:
+def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
@@ -90,7 +100,7 @@ def issue_session(s: Session, user: StaffUser) -> tuple[str, datetime]:
     token = secrets.token_urlsafe(32)
     now = utcnow()
     expires = now + timedelta(hours=SESSION_HOURS)
-    s.add(StaffSession(institution_id=user.institution_id, user_id=user.id, token_hash=_token_hash(token),
+    s.add(StaffSession(institution_id=user.institution_id, user_id=user.id, token_hash=token_hash(token),
                        created_at=now, expires_at=expires))
     user.last_login_at = now
     return token, expires
@@ -99,8 +109,12 @@ def issue_session(s: Session, user: StaffUser) -> tuple[str, datetime]:
 def revoke_sessions(s: Session, user_id: int, except_token: str | None = None) -> None:
     q = update(StaffSession).where(StaffSession.user_id == user_id, StaffSession.revoked_at.is_(None))
     if except_token:
-        q = q.where(StaffSession.token_hash != _token_hash(except_token))
+        q = q.where(StaffSession.token_hash != token_hash(except_token))
     s.execute(q.values(revoked_at=utcnow()))
+
+
+def _invalid_session() -> HTTPException:
+    return HTTPException(401, "session expired, please log in again", headers={"WWW-Authenticate": "Bearer"})
 
 
 def bearer_token(authorization: str | None = Header(default=None)) -> str:
@@ -111,36 +125,79 @@ def bearer_token(authorization: str | None = Header(default=None)) -> str:
 
 
 def current_session(token: str = Depends(bearer_token), s: Session = Depends(get_session)) -> StaffSession:
-    sess = s.scalar(select(StaffSession).where(StaffSession.token_hash == _token_hash(token)))
+    sess = s.scalar(select(StaffSession).where(StaffSession.token_hash == token_hash(token)))
     if not sess or sess.revoked_at or sess.expires_at <= utcnow():
-        raise HTTPException(401, "session expired, please log in again", headers={"WWW-Authenticate": "Bearer"})
+        raise _invalid_session()
     return sess
 
 
 def current_user(sess: StaffSession = Depends(current_session), s: Session = Depends(get_session)) -> StaffUser:
+    """A logged-in person. API keys are refused here (their token is never a session)."""
     user = s.get(StaffUser, sess.user_id)
     if not user or not user.is_active or user.institution_id != sess.institution_id:
-        raise HTTPException(401, "session expired, please log in again", headers={"WWW-Authenticate": "Bearer"})
+        raise _invalid_session()
     return user
 
 
+# ---------------------------------------------------------------- API keys
+
+def new_api_key() -> str:
+    return API_KEY_PREFIX + secrets.token_urlsafe(32)
+
+
+def _api_key(s: Session, token: str) -> ApiKey:
+    key = s.scalar(select(ApiKey).where(ApiKey.key_hash == token_hash(token)))
+    if not key or key.revoked_at:
+        raise HTTPException(401, "invalid or revoked API key", headers={"WWW-Authenticate": "Bearer"})
+    now = utcnow()
+    if not key.last_used_at or now - key.last_used_at >= _LAST_USED_EVERY:
+        key.last_used_at = now
+        s.commit()
+    return key
+
+
+@dataclass(frozen=True)
+class Principal:
+    """Whoever is calling: a staff user or an institution API key."""
+
+    kind: str  # user | api_key
+    id: int
+    institution_id: int
+    role: str
+    name: str
+
+    @property
+    def is_user(self) -> bool:
+        return self.kind == "user"
+
+
+def current_principal(token: str = Depends(bearer_token), s: Session = Depends(get_session)) -> Principal:
+    if token.startswith(API_KEY_PREFIX):
+        k = _api_key(s, token)
+        return Principal("api_key", k.id, k.institution_id, k.role, k.name)
+    user = current_user(current_session(token, s), s)
+    return Principal("user", user.id, user.institution_id, user.role, user.name)
+
+
 def require(action: str):
-    """Dependency: the caller is logged in, has a role allowed to do `action`, and — when the
-    route has an {institution_id} — belongs to that institution."""
+    """Dependency: the caller (staff user or API key) has a role allowed to do `action`, and —
+    when the route has an {institution_id} — belongs to that institution."""
     allowed = PERMISSIONS[action]
 
-    def dep(institution_id: int | None = None, user: StaffUser = Depends(current_user)) -> StaffUser:
+    def dep(institution_id: int | None = None, who: Principal = Depends(current_principal)) -> Principal:
         if institution_id is not None:
-            ensure_same_institution(user, institution_id)
-        if user.role not in allowed:
+            ensure_same_institution(who, institution_id)
+        if not who.is_user and action in HUMAN_ONLY:
+            raise HTTPException(403, "API keys cannot do this; a staff member must")
+        if who.role not in allowed:
             raise HTTPException(403, "your role does not allow this")
-        return user
+        return who
 
     return dep
 
 
-def ensure_same_institution(user: StaffUser, institution_id: int, what: str = "institution") -> None:
-    if user.institution_id != institution_id:
+def ensure_same_institution(who: Principal, institution_id: int, what: str = "institution") -> None:
+    if who.institution_id != institution_id:
         raise HTTPException(404, f"{what} not found")
 
 

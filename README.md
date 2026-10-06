@@ -29,7 +29,7 @@ It sits beside any core banking system and works from the CSV/Excel exports ever
 pip install -r requirements.txt
 python scripts/make_sample_data.py      # fictional test data
 python scripts/run_demo.py              # full pipeline -> demo_output.json
-python -m pytest -q                     # 34 tests
+python -m pytest -q                     # 44 tests
 uvicorn sawazi.api:app --reload          # API at http://localhost:8000/docs
 ```
 
@@ -48,6 +48,13 @@ Every staff user belongs to exactly one institution and only ever sees that inst
 | accountant | credit_officer + imports, matching, check-off reconcile, clear suspense / resolve exceptions, postings export |
 | admin | accountant + manage staff users |
 
+**API keys for machine access** (a nightly core banking sync, scheduled uploads): an institution admin creates
+them with `POST /institutions/{id}/api-keys` and a role of `accountant`, `credit_officer` or `viewer` (never admin).
+The full key (`swz_...`) is shown once; only its hash is stored. Send it as `Authorization: Bearer swz_...`.
+A key belongs to the institution, not the person who made it, so it keeps working if that person leaves; revoke it with
+`DELETE /institutions/{id}/api-keys/{key_id}`. Keys can never clear suspense, resolve exceptions or manage staff or keys:
+a person must do those.
+
 `SAWAZI_API_KEY` is the Pesara platform key (header `X-API-Key`). It is only for creating institutions and
 each institution's first admin, and is never given to an institution. If it is not set those endpoints are closed.
 
@@ -65,6 +72,8 @@ curl -X POST localhost:8000/institutions/1/admin -H "X-API-Key: $SAWAZI_API_KEY"
 | POST | `/auth/login`, `/auth/logout`, `/auth/password`; GET `/auth/me` | Staff login, logout, change own password, who am I |
 | GET/POST | `/institutions/{id}/users` | List / add staff (admin) |
 | PATCH | `/institutions/{id}/users/{user_id}` | Change role, deactivate, reset password (admin) |
+| GET/POST | `/institutions/{id}/api-keys` | List / create institution API keys (admin; full key shown once) |
+| DELETE | `/institutions/{id}/api-keys/{key_id}` | Revoke an API key (admin) |
 | POST | `/institutions/{id}/import/{kind}` | `members`, `loans`, `mpesa`, `bank`, `checkoff_schedule`, `checkoff_remittance` (check-off needs `employer` and `period=YYYY-MM`) |
 | POST | `/institutions/{id}/checkoff/reconcile` | Reconcile one employer and period |
 | POST | `/institutions/{id}/match` | Match and allocate everything pending |
@@ -94,7 +103,7 @@ tests/                 pytest suite
 
 - Send SMS through Africa's Talking, with delivery status
 - Daraja C2B callbacks for real-time matching (statements stay as the fallback)
-- Audit log of every manual action; per-institution API keys
+- Audit log of every manual action
 - Staff web console for suspense clearing and the collections queue
 - Allocation rules configurable per institution (penalties, interest, principal order)
 

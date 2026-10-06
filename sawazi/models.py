@@ -203,3 +203,21 @@ class StaffSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ApiKey(Base):
+    """Machine access for one institution (core banking sync, scheduled uploads).
+    Belongs to the institution, not to the staff member who created it. Only the SHA-256 is stored."""
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    role: Mapped[str] = mapped_column(String(20))  # accountant | credit_officer | viewer (never admin)
+    prefix: Mapped[str] = mapped_column(String(16))  # first characters, shown so staff can tell keys apart
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("staff_users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
