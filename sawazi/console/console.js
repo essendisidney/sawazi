@@ -44,7 +44,6 @@ const KIND = {
   large_payment: "Unusually large payment", c2b_mismatch: "M-Pesa callback disagrees with statement",
 };
 const kindLabel = (k) => KIND[k] || k.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
-const TARGET = { loan_arrears: "arrears", loan_installment: "instalment", deposits: "deposits" };
 const CHANNEL = { sms: "SMS", call: "Call", guarantor_notice: "Guarantor notice", field_visit: "Field visit", recovery: "Recovery" };
 
 class ApiError extends Error {
@@ -167,6 +166,7 @@ const VIEWS = {
   exceptions: { label: "Exceptions", need: "read", render: viewExceptions, badge: () => state.counts?.other },
   collections: { label: "Collections", need: "read", render: viewCollections },
   upload: { label: "Upload", need: "reconcile", render: viewUpload },
+  rules: { label: "Allocation rules", need: "read", render: viewRules },
 };
 
 const inst = () => `/institutions/${state.me.institution_id}`;
@@ -353,13 +353,13 @@ async function clearTo(e, m, button, slot) {
     h("div", { class: "stack" },
       h("p", null, `${kes(e.amount_kes)} (${(t.source || "").toUpperCase()} ${t.reference || ""}) will be allocated to:`),
       h("p", null, h("b", null, m.name), " ", h("span", { class: "num" }, m.member_no)),
-      h("p", { class: "muted small" }, "Arrears first, then the current instalment, then deposits. This cannot be undone from Sawazi."),
+      h("p", { class: "muted small" }, "It is split by your institution's allocation rules. This cannot be undone from Sawazi."),
       h("label", null, "Why (recorded in the audit log)", noteInput)),
     `Clear to ${m.member_no}`);
   if (!ok) return;
   await busy(button, slot, async () => {
     const r = await api(`/exceptions/${e.id}/resolve`, { method: "POST", body: { member_no: m.member_no, note: noteInput.value.trim() || null } });
-    const split = (r.allocations || []).map((a) => `${kes(a.amount_kes)} to ${TARGET[a.target] || a.target}`).join(", ");
+    const split = (r.allocations || []).map((a) => `${kes(a.amount_kes)} to ${(TARGET_LABEL[a.target] || a.target).toLowerCase()}`).join(", ");
     slot.replaceChildren(note("ok", `Cleared to ${m.member_no} ${m.name}: ${split}.`));
     button.closest("article").querySelectorAll("button, details").forEach((x) => { if (x.tagName === "BUTTON") x.disabled = true; else x.remove(); });
     await refreshCounts();
@@ -568,7 +568,7 @@ function uploadPanel() {
       const params = kind.value.startsWith("checkoff") ? { employer: employer.value.trim(), period: period.value } : {};
       const r = await api(`${inst()}/import/${kind.value}`, { method: "POST", form: fd, params });
       const parts = [`${r.created} new`, `${r.skipped_duplicates} already in Sawazi`];
-      if (r.rejected_count) parts.push(`${r.rejected_count} rows could not be read`);
+      if (r.rejected_count) parts.push(`${plural(r.rejected_count, "row")} need a look (listed below)`);
       if (r.callbacks_confirmed) parts.push(`${r.callbacks_confirmed} real-time payments confirmed`);
       if (r.callbacks_mismatched) parts.push(`${r.callbacks_mismatched} real-time payments DISAGREE with the statement (see Exceptions)`);
       slot.replaceChildren(note(r.callbacks_mismatched || r.rejected_count ? "warn" : "ok", `${file.files[0].name}: ${parts.join(", ")}.`),
@@ -621,6 +621,120 @@ function reconcilePanel() {
     h("h2", null, "Reconcile check-off"),
     h("p", { class: "muted small" }, "Compares what an employer was scheduled to deduct with what they remitted, member by member."),
     h("div", { class: "row-form" }, h("label", null, "Employer", employer), h("label", null, "Month", period)),
+    h("div", null, btn), slot);
+}
+
+// ------------------------------------------------------------------ allocation rules
+
+const TARGET_LABEL = {
+  loan_penalty: "Penalty", loan_interest: "Interest", loan_principal: "Principal", loan_arrears: "Arrears",
+  loan_installment: "Current instalment", deposits: "Deposits", shares: "Share capital",
+};
+const PART_LABEL = { penalty: "Penalty", interest: "Interest", principal: "Principal" };
+
+async function viewRules() {
+  const r = await api(`${inst()}/allocation-rules`);
+  const editable = can("allocation_rules");
+  const dis = editable ? null : true;
+
+  const loanOrder = h("select", { disabled: dis }, Object.entries(r.choices.loan_order).map(([k, label]) =>
+    h("option", { value: k, selected: k === r.loan_order ? true : null }, label)));
+  const parts = r.arrears_order.map((p) => h("select", { disabled: dis, "aria-label": "Arrears part" },
+    r.choices.arrears_parts.map((x) => h("option", { value: x, selected: x === p ? true : null }, PART_LABEL[x]))));
+  const installment = h("input", { type: "checkbox", disabled: dis, checked: r.pay_current_installment ? true : null });
+
+  // Excess: optionally one capped bucket, then the rest to the other target.
+  const [first, last] = r.excess.length > 1 ? r.excess : [null, r.excess[0]];
+  const split = h("select", { disabled: dis, "aria-label": "Split what is left" },
+    h("option", { value: "none" }, `Everything to one account`),
+    h("option", { value: "percent" }, "A percentage first"),
+    h("option", { value: "fixed" }, "A fixed amount first"));
+  split.value = !first ? "none" : first.percent !== null ? "percent" : "fixed";
+  const firstTarget = h("select", { disabled: dis, "aria-label": "First account" },
+    r.choices.excess_targets.map((x) => h("option", { value: x }, TARGET_LABEL[x])));
+  firstTarget.value = first ? first.target : "shares";
+  const firstValue = h("input", { type: "number", min: "0.01", step: "0.01", disabled: dis, "aria-label": "Percent or amount",
+    value: first ? String(first.percent ?? first.max_kes) : "" });
+  const lastTarget = h("select", { disabled: dis, "aria-label": "Account for the rest" },
+    r.choices.excess_targets.map((x) => h("option", { value: x }, TARGET_LABEL[x])));
+  lastTarget.value = last.target;
+  const firstRow = h("div", { class: "row-form" }, h("label", null, "Account", firstTarget),
+    h("label", null, "Percent / KES", firstValue));
+  const syncSplit = () => { firstRow.hidden = split.value === "none"; };
+  split.addEventListener("change", syncSplit);
+  syncSplit();
+
+  const draft = () => ({
+    loan_order: loanOrder.value,
+    arrears_order: parts.map((p) => p.value),
+    pay_current_installment: installment.checked,
+    excess: split.value === "none" ? [{ target: lastTarget.value }] : [
+      split.value === "percent" ? { target: firstTarget.value, percent: Math.round(Number(firstValue.value)) }
+        : { target: firstTarget.value, max_kes: firstValue.value },
+      { target: lastTarget.value }],
+  });
+
+  const saveSlot = h("div");
+  const save = h("button", { type: "submit", class: "primary" }, "Save rules");
+  const form = h("form", { class: "panel pad stack", onsubmit: async (e) => {
+    e.preventDefault();
+    const d = draft();
+    const ok = await confirmDialog("Save these allocation rules?",
+      h("div", { class: "stack" },
+        h("p", null, "Every payment allocated from now on will be split this way, including suspense you clear by hand. Payments already allocated are not changed."),
+        h("p", { class: "muted small" }, "Try a few members in the preview first if you have not.")),
+      "Save rules");
+    if (!ok) return;
+    busy(save, saveSlot, async () => {
+      await api(`${inst()}/allocation-rules`, { method: "PUT", body: d });
+      saveSlot.replaceChildren(note("ok", "Saved. New payments will be split this way."));
+    });
+  } },
+    h("h2", null, "How a payment is split"),
+    h("div", { class: "steps" },
+      h("label", null, "1. Which loan first", loanOrder),
+      h("div", { class: "stack" }, h("span", null, h("b", null, "2. Arrears on each loan, in this order")),
+        h("div", { class: "row-form" }, parts),
+        h("p", { class: "muted small" }, "Uses the penalty and interest arrears from your loans export. Loans without that breakdown are paid as one arrears amount.")),
+      h("label", { class: "check" }, installment, "3. Then pay the current instalment on each loan"),
+      h("div", { class: "stack" }, h("span", null, h("b", null, "4. What is left")), split, firstRow,
+        h("label", null, "The rest goes to", lastTarget))),
+    editable ? h("div", { class: "actions" }, save) : h("p", { class: "muted small" }, "Only an admin can change these rules."),
+    saveSlot,
+    h("p", { class: "muted small" }, r.is_default ? "These are Sawazi's default rules." : `Last changed ${when(r.updated_at)}.`));
+
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Allocation rules"),
+      h("p", { class: "muted" }, "How each matched payment is shared across a member's loans, deposits and shares. Sawazi does not calculate interest or penalties: it uses the figures from your core system."))),
+    h("div", { class: "grid2" }, form, previewPanel(draft)),
+  ];
+}
+
+function previewPanel(draft) {
+  const memberNo = h("input", { type: "text", required: true, placeholder: "e.g. UT00104" });
+  const amount = h("input", { type: "number", min: "1", step: "0.01", required: true, placeholder: "KES" });
+  const slot = h("div");
+  const btn = h("button", { type: "submit" }, "Preview");
+  return h("form", { class: "panel pad stack", onsubmit: (e) => {
+    e.preventDefault();
+    busy(btn, slot, async () => {
+      const r = await api(`${inst()}/allocation-rules/preview`, { method: "POST",
+        body: { member_no: memberNo.value.trim(), amount_kes: amount.value, rules: draft() } });
+      const before = Object.fromEntries(r.loans_before.map((l) => [l.loan_no, l]));
+      slot.replaceChildren(h("div", { class: "stack" },
+        h("p", null, h("b", null, r.member), " ", h("span", { class: "num muted" }, r.member_no), ` paying ${kes(r.amount_kes)}:`),
+        h("div", { class: "tbl-wrap" }, h("table", null,
+          h("thead", null, h("tr", null, h("th", null, "Goes to"), h("th", null, "Loan"), h("th", { class: "n" }, "Amount"))),
+          h("tbody", null, r.lines.map((x) => h("tr", null, h("td", null, TARGET_LABEL[x.target] || x.target),
+            h("td", { class: "num" }, x.loan_no || ""), h("td", { class: "n" }, kes(x.amount_kes))))))),
+        r.loans_after.length ? h("p", { class: "muted small" }, r.loans_after.map((l) =>
+          `${l.loan_no}: arrears ${kes(before[l.loan_no].arrears_kes)} → ${kes(l.arrears_kes)}`).join(" · ")) : null,
+        h("p", { class: "muted small" }, "Preview only: nothing was changed.")));
+    });
+  } },
+    h("h2", null, "Preview"),
+    h("p", { class: "muted small" }, "See how a payment would be split with the rules on the left, before saving them."),
+    h("div", { class: "row-form" }, h("label", null, "Member number", memberNo), h("label", null, "Amount", amount)),
     h("div", null, btn), slot);
 }
 

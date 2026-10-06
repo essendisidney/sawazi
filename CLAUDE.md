@@ -26,7 +26,7 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 3. SMS DONE via Taifa Mobile (`sawazi/sms.py`; no Taifa sandbox, so `simulate` is the default provider). Delivery callbacks, opt-outs, staff-approval-only sending. Left: confirm with Taifa the number format (we send 2547XXXXXXXX) and API key length before the first live send
 4. Daraja C2B DONE (`sawazi/daraja.py`, `scripts/daraja_register.py`). Validation always accepts; statement uploads confirm every callback. Left: test against the Daraja sandbox; if Safaricom sends hashed MSISDNs, consider matching on the hash of member phones
 5. Staff web console DONE (`sawazi/console/`, run `scripts/console_demo.py`). Left: admin screens (staff users, API keys, SMS settings, opt-outs, audit log) still API-only
-6. Configurable allocation rules per institution (penalty -> interest -> principal order, deposit/share splits)
+6. Allocation rules DONE (`sawazi/engine/allocation.py`). Penalty/interest arrears come from the core export, never computed by Sawazi. Defaults must keep reproducing the original split. Left: share-capital rules that need the member's share balance (e.g. 'until minimum shares reached') wait until the core export carries it
 7. Alembic migrations; PostgreSQL in production
 
 ## Stack and conventions
@@ -43,7 +43,8 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 ## Layout
 - `sawazi/models.py` data model
 - `sawazi/importers/` CSV parsing (members, loans, M-Pesa paybill statement, bank statement, check-off)
-- `sawazi/engine/matching.py` member matching, allocation, anomaly flags
+- `sawazi/engine/matching.py` member matching, anomaly flags
+- `sawazi/engine/allocation.py` allocation rules: `plan()` is pure (used for preview), `apply()` writes
 - `sawazi/engine/checkoff.py` check-off schedule vs remittance reconciliation
 - `sawazi/engine/collections.py` arrears ranking, drafted messages, PAR
 - `sawazi/api.py` FastAPI app

@@ -9,7 +9,7 @@ It sits beside any core banking system and works from the CSV/Excel exports ever
 |---|---|
 | **Importers** | Members and loans from the core system; M-Pesa paybill statements; bank statements; employer check-off schedules and remittances. Re-importing a file never double-counts. |
 | **Matching engine** | Finds the member behind every payment using member number, loan number, ID number, bank narrative, registered phone and (as a suggestion only) payer name. Catches typos that land on *another* valid member number. Anything uncertain goes to suspense with a suggested member and the reason. |
-| **Allocation** | Splits each payment: arrears first (oldest loan first), then the current instalment, then deposits. Exports a postings file for the core system. |
+| **Allocation** | Splits each payment by the institution's own rules (which loan first; penalty, interest, principal order; current instalment; share capital and deposit split). Exports a postings file for the core system. |
 | **Check-off reconciliation** | Schedule vs remittance per employer and period: short, over, missing, unscheduled and unidentifiable payroll lines. Matches name-only payroll lines. |
 | **Anomalies** | Possible double payments, third-party payments, unusually large payments (AML). |
 | **Collections** | Ranks every loan in arrears by how much acting now recovers; queues SMS, call, guarantor notice, field visit or recovery, with the message drafted. Portfolio-at-risk (PAR 1/30/90). |
@@ -29,7 +29,7 @@ It sits beside any core banking system and works from the CSV/Excel exports ever
 pip install -r requirements.txt
 python scripts/make_sample_data.py      # fictional test data
 python scripts/run_demo.py              # full pipeline -> demo_output.json
-python -m pytest -q                     # 115 tests
+python -m pytest -q                     # 141 tests
 uvicorn sawazi.api:app --reload          # API at http://localhost:8000/docs
 ```
 
@@ -57,6 +57,26 @@ python scripts/console_demo.py      # http://localhost:8765/console/ (logins pri
 
 The console shows uploaded data only as text, loads scripts only from its own files, and is served with a strict
 Content-Security-Policy. Login tokens are kept for the browser tab only (`sessionStorage`).
+
+## Allocation rules
+
+Each institution chooses how a matched payment is split (`GET/PUT /institutions/{id}/allocation-rules`, admin only,
+or the console's Allocation rules page):
+
+1. **Which loan first:** most overdue (default), oldest loan, or largest arrears. A payment that names a loan always serves that loan first.
+2. **Arrears order on each loan:** any order of penalty, interest and principal (default penalty, interest, principal).
+3. **Current instalment:** pay it next, or not.
+4. **What is left:** all to deposits (default), or a percentage or fixed amount to share capital (or deposits) first and the rest to the other.
+
+Sawazi never calculates interest or penalties. Add `Penalty Arrears` and `Interest Arrears` columns to the loans
+export and Sawazi uses them; the rest of arrears is principal. Loans exported without them are paid as one
+`loan_arrears` amount, exactly as before. The defaults reproduce Sawazi's original split line for line.
+Try rules before saving with `POST /institutions/{id}/allocation-rules/preview` (changes nothing). Rule changes apply
+to new allocations only, and are in the audit log. Postings use the targets `loan_penalty`, `loan_interest`,
+`loan_principal`, `loan_arrears`, `loan_installment`, `shares` and `deposits`.
+
+Local databases created before this change need recreating (all sample data is fictional): delete `sawazi.db` /
+`console_demo.db`. Proper migrations come with Alembic (Phase 1 item 7).
 
 ## Staff login and roles
 
@@ -165,6 +185,8 @@ curl -X POST localhost:8000/institutions/1/admin -H "X-API-Key: $SAWAZI_API_KEY"
 | GET/POST | `/institutions/{id}/api-keys` | List / create institution API keys (admin; full key shown once) |
 | DELETE | `/institutions/{id}/api-keys/{key_id}` | Revoke an API key (admin) |
 | GET | `/institutions/{id}/audit` | Audit log of every manual action, newest first (admin) |
+| GET/PUT | `/institutions/{id}/allocation-rules` | How payments are split (admin changes) |
+| POST | `/institutions/{id}/allocation-rules/preview` | Show how a member's payment would be split, changing nothing |
 | GET | `/institutions/{id}/members?q=` | Find a member by number, name, phone or ID number, with active loans |
 | GET | `/institutions/{id}/c2b/unconfirmed` | Real-time M-Pesa payments not yet seen on a paybill statement |
 | POST | `/institutions/{id}/reminders/send` | Approve and send reminders to members by SMS (staff only) |
@@ -193,7 +215,8 @@ sawazi/
   daraja.py            M-Pesa Daraja C2B callback parsing, URL registration
   console/             staff web console (static HTML/CSS/JS served at /console/)
   importers/           CSV parsing for every source
-  engine/matching.py   member matching, allocation, anomaly flags
+  engine/matching.py   member matching, anomaly flags
+  engine/allocation.py per-institution allocation rules (pure planner + apply)
   engine/checkoff.py   check-off reconciliation
   engine/collections.py arrears ranking, messages, PAR
   api.py               FastAPI app
@@ -203,6 +226,5 @@ tests/                 pytest suite
 
 ## Next (Phase 1 remaining)
 
-- Allocation rules configurable per institution (penalties, interest, principal order)
 
 Before any real member data: ODPC registration and a data processing agreement with each pilot institution.

@@ -42,10 +42,11 @@ PERMISSIONS: dict[str, set[str]] = {
     "audit": {"admin"},                                            # read the audit log
     "send_sms": {"admin", "accountant", "credit_officer"},         # approve SMS to members, record opt-outs
     "sms_settings": {"admin"},                                     # SMS setup, opting a number back in
+    "allocation_rules": {"admin"},                                 # how payments are split
 }
 # A person must do these, never a machine: they move money to a member, message members,
 # or change who has access.
-HUMAN_ONLY = {"resolve", "manage_users", "send_sms", "sms_settings"}
+HUMAN_ONLY = {"resolve", "manage_users", "send_sms", "sms_settings", "allocation_rules"}
 API_KEY_ROLES = ("accountant", "credit_officer", "viewer")
 API_KEY_PREFIX = "swz_"
 _LAST_USED_EVERY = timedelta(minutes=1)  # don't write to the database on every request

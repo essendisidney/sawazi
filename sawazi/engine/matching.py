@@ -1,7 +1,7 @@
 """Payment matching and allocation.
 
 Every money-in line is matched to a member using the strongest available
-evidence, then split across arrears, the current instalment and deposits.
+evidence, then split by the institution's allocation rules (engine/allocation.py).
 Anything the engine is not confident about goes to suspense with a suggested
 member and the reason, so a person can clear it in seconds instead of hours.
 """
@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..importers.common import norm_name, norm_ref
+from . import allocation
 from ..models import Allocation, ExceptionItem, Loan, Member, Transaction
 
 AUTO_ALLOCATE_AT = 85  # confidence needed to allocate without a human
@@ -140,59 +141,15 @@ def find_member(idx: MemberIndex, t: Transaction) -> tuple[Candidate | None, str
     return None, "no member number, loan number, ID or registered phone found"
 
 
-def allocate(s: Session, t: Transaction, member_id: int, preferred_loan_id: int | None = None) -> list[Allocation]:
-    """Split a payment: arrears first (oldest first), then current instalments, then deposits."""
-    loans = list(
-        s.scalars(
-            select(Loan)
-            .where(Loan.member_id == member_id, Loan.status == "active")
-            .order_by(Loan.days_in_arrears.desc(), Loan.disbursed_on)
-        )
-    )
-    if preferred_loan_id:  # payment named a specific loan: serve it first
-        loans.sort(key=lambda ln: ln.id != preferred_loan_id)
-
-    remaining = t.amount_cents
-    out: list[Allocation] = []
-
-    def take(target, loan, amount):
-        nonlocal remaining
-        if amount <= 0:
-            return
-        out.append(
-            Allocation(
-                institution_id=t.institution_id,
-                transaction_id=t.id,
-                target=target,
-                loan_id=loan.id if loan else None,
-                amount_cents=amount,
-            )
-        )
-        remaining -= amount
-
-    for ln in loans:
-        pay = min(remaining, ln.arrears_cents, ln.balance_cents)
-        take("loan_arrears", ln, pay)
-        ln.arrears_cents -= pay
-        ln.balance_cents -= pay
-        if ln.arrears_cents == 0:
-            ln.days_in_arrears = 0
-    for ln in loans:
-        pay = min(remaining, ln.installment_cents, ln.balance_cents)
-        take("loan_installment", ln, pay)
-        ln.balance_cents -= pay
-        if ln.balance_cents <= 0:
-            ln.status = "closed"
-    take("deposits", None, remaining)
-
-    s.add_all(out)
-    t.member_id = member_id
-    t.status = "allocated"
-    return out
+def allocate(s: Session, t: Transaction, member_id: int, preferred_loan_id: int | None = None,
+             rules: allocation.Rules | None = None) -> list[Allocation]:
+    """Split a payment using the institution's allocation rules (engine/allocation.py)."""
+    return allocation.apply(s, t, member_id, preferred_loan_id, rules)
 
 
 def run_matching(s: Session, institution_id: int) -> dict:
     idx = MemberIndex(s, institution_id)
+    rules = allocation.rules_for(s, institution_id)
     pending = list(
         s.scalars(
             select(Transaction)
@@ -205,7 +162,7 @@ def run_matching(s: Session, institution_id: int) -> dict:
         cand, reason = find_member(idx, t)
         if cand and cand.confidence >= AUTO_ALLOCATE_AT:
             t.match_method, t.match_confidence = cand.method, cand.confidence
-            allocate(s, t, cand.member_id, cand.loan_id)
+            allocate(s, t, cand.member_id, cand.loan_id, rules)
             summary["allocated"] += 1
             summary["allocated_cents"] += t.amount_cents
         else:

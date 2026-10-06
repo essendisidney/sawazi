@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import RedirectResponse, StreamingResponse
@@ -29,10 +30,11 @@ from .auth import API_KEY_ROLES, PERMISSIONS, ROLES, Principal, require
 from .db import get_session, init_db
 from .engine.checkoff import reconcile_checkoff
 from .engine.collections import build_queue, portfolio_at_risk
+from .engine import allocation
 from .engine.matching import allocate, run_matching
 from .importers import sources
 from .importers.common import norm_phone
-from .models import (Allocation, ApiKey, AuditEvent, ExceptionItem, Institution, Loan, Member, MpesaCallback,
+from .models import (Allocation, AllocationRules, ApiKey, AuditEvent, ExceptionItem, Institution, Loan, Member, MpesaCallback,
                      Reminder, SmsMessage, SmsOptOut, SmsSettings, StaffSession, StaffUser, Transaction)
 
 @asynccontextmanager
@@ -930,6 +932,108 @@ def c2b_unconfirmed(institution_id: int, older_than_hours: int = Query(48, ge=0)
     ).order_by(MpesaCallback.received_at))
     return [{"trans_id": c.trans_id, "amount_kes": c.amount_cents / 100, "received_at": c.received_at,
              "transaction_id": c.transaction_id, "ip": c.ip} for c in rows]
+
+
+# ---------------------------------------------------------------- allocation rules
+
+class ExcessIn(BaseModel):
+    target: str = Field(pattern="^(" + "|".join(allocation.EXCESS_TARGETS) + ")$")
+    percent: int | None = Field(default=None, ge=1, le=99)
+    max_kes: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
+
+
+class RulesIn(BaseModel):
+    loan_order: str = Field(pattern="^(" + "|".join(allocation.LOAN_ORDERS) + ")$")
+    arrears_order: list[str] = Field(min_length=3, max_length=3)
+    pay_current_installment: bool = True
+    excess: list[ExcessIn] = Field(min_length=1, max_length=len(allocation.EXCESS_TARGETS))
+
+    def to_rules(self) -> allocation.Rules:
+        r = allocation.Rules(
+            loan_order=self.loan_order, arrears_order=list(self.arrears_order),
+            pay_current_installment=self.pay_current_installment,
+            excess=[allocation.ExcessBucket(b.target, b.percent,
+                                            int(b.max_kes * 100) if b.max_kes is not None else None)
+                    for b in self.excess])
+        try:
+            r.validate()
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from None
+        return r
+
+
+def _rules_out(s: Session, institution_id: int) -> dict:
+    row = s.scalar(select(AllocationRules).where(AllocationRules.institution_id == institution_id))
+    return {**allocation.rules_for(s, institution_id).as_dict(), "is_default": row is None,
+            "updated_at": row.updated_at if row else None,
+            "updated_by_user_id": row.updated_by_user_id if row else None,
+            "choices": {"loan_order": allocation.LOAN_ORDERS, "arrears_parts": list(allocation.ARREARS_PARTS),
+                        "excess_targets": list(allocation.EXCESS_TARGETS)}}
+
+
+@app.get("/institutions/{institution_id}/allocation-rules", dependencies=[Depends(require("read"))],
+         tags=["allocation"])
+def get_allocation_rules(institution_id: int, s: Session = Depends(get_session)):
+    return _rules_out(s, institution_id)
+
+
+@app.put("/institutions/{institution_id}/allocation-rules", tags=["allocation"])
+def put_allocation_rules(institution_id: int, body: RulesIn, s: Session = Depends(get_session),
+                         who: Principal = Depends(require("allocation_rules"))):
+    """Applies to payments allocated from now on. Past allocations are never changed."""
+    _inst(s, institution_id)
+    rules = body.to_rules()
+    before = allocation.rules_for(s, institution_id).as_dict()
+    row = s.scalar(select(AllocationRules).where(AllocationRules.institution_id == institution_id))
+    if row is None:
+        row = AllocationRules(institution_id=institution_id)
+        s.add(row)
+    row.loan_order, row.arrears_order = rules.loan_order, rules.arrears_order
+    row.pay_current_installment = rules.pay_current_installment
+    row.excess = [{"target": b.target, "percent": b.percent, "max_cents": b.max_cents} for b in rules.excess]
+    row.updated_at, row.updated_by_user_id = auth.utcnow(), who.id
+    s.flush()
+    audit.record(s, who, "allocation_rules.update", "allocation_rules", row.id, before=before, after=rules.as_dict())
+    s.commit()
+    return _rules_out(s, institution_id)
+
+
+class PreviewIn(BaseModel):
+    member_no: str
+    amount_kes: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    loan_no: str | None = Field(default=None, description="if the payment named a loan")
+    rules: RulesIn | None = Field(default=None, description="draft rules to try; current rules if left out")
+
+
+@app.post("/institutions/{institution_id}/allocation-rules/preview", dependencies=[Depends(require("read"))],
+          tags=["allocation"])
+def preview_allocation(institution_id: int, body: PreviewIn, s: Session = Depends(get_session)):
+    """How a payment from this member would be split. Changes nothing."""
+    m = s.scalar(select(Member).where(Member.institution_id == institution_id, Member.member_no == body.member_no))
+    if not m:
+        raise HTTPException(404, "member not found")
+    rules = body.rules.to_rules() if body.rules else allocation.rules_for(s, institution_id)
+    loans = list(s.scalars(select(Loan).where(Loan.institution_id == institution_id, Loan.member_id == m.id,
+                                              Loan.status == "active")))
+    preferred = next((ln.id for ln in loans if body.loan_no and ln.loan_no == body.loan_no), None)
+    states = [allocation.LoanState.of(ln) for ln in loans]  # copies: the real loans are not touched
+    lines = allocation.plan(int(body.amount_kes * 100), states, rules, preferred)
+    loan_no = {ln.id: ln.loan_no for ln in loans}
+
+    def loan_view(x) -> dict:
+        return {"loan_no": x.loan_no, "balance_kes": x.balance_cents / 100, "arrears_kes": x.arrears_cents / 100,
+                "penalty_arrears_kes": x.penalty_arrears_cents / 100,
+                "interest_arrears_kes": x.interest_arrears_cents / 100,
+                "installment_kes": x.installment_cents / 100}
+
+    return {
+        "member_no": m.member_no, "member": m.name, "amount_kes": float(body.amount_kes),
+        "rules": rules.as_dict(),
+        "lines": [{"target": x.target, "loan_no": loan_no.get(x.loan_id), "amount_kes": x.amount_cents / 100}
+                  for x in lines],
+        "loans_before": [loan_view(allocation.LoanState.of(ln)) for ln in loans],
+        "loans_after": [loan_view(x) for x in states],
+    }
 
 
 # ---------------------------------------------------------------- staff web console

@@ -63,6 +63,10 @@ class Loan(Base):
     balance_cents: Mapped[int] = mapped_column(Integer)
     installment_cents: Mapped[int] = mapped_column(Integer)
     arrears_cents: Mapped[int] = mapped_column(Integer, default=0)
+    # Parts of arrears_cents, as reported by the core system (Sawazi never computes them). The rest is principal.
+    penalty_arrears_cents: Mapped[int] = mapped_column(Integer, default=0)
+    interest_arrears_cents: Mapped[int] = mapped_column(Integer, default=0)
+    arrears_breakdown: Mapped[bool] = mapped_column(Boolean, default=False)  # the export gave the parts
     days_in_arrears: Mapped[int] = mapped_column(Integer, default=0)
     disbursed_on: Mapped[date | None] = mapped_column(Date)
     next_due_on: Mapped[date | None] = mapped_column(Date)
@@ -107,7 +111,8 @@ class Allocation(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
     transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id"), index=True)
-    target: Mapped[str] = mapped_column(String(20))  # loan_arrears | loan_installment | deposits
+    # loan_penalty | loan_interest | loan_principal | loan_arrears (no breakdown) | loan_installment | deposits | shares
+    target: Mapped[str] = mapped_column(String(20))
     loan_id: Mapped[int | None] = mapped_column(ForeignKey("loans.id"))
     amount_cents: Mapped[int] = mapped_column(Integer)
 
@@ -313,3 +318,18 @@ class MpesaCallback(Base):
     transaction_id: Mapped[int | None] = mapped_column(ForeignKey("transactions.id"))
     statement_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime)
     statement_mismatch: Mapped[str | None] = mapped_column(Text)
+
+
+class AllocationRules(Base):
+    """How this institution wants payments split. No row means the defaults (see engine/allocation.py)."""
+
+    __tablename__ = "allocation_rules"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), unique=True)
+    loan_order: Mapped[str] = mapped_column(String(30))
+    arrears_order: Mapped[list] = mapped_column(JSON)  # e.g. ["penalty", "interest", "principal"]
+    pay_current_installment: Mapped[bool] = mapped_column(Boolean)
+    excess: Mapped[list] = mapped_column(JSON)  # [{"target", "percent", "max_cents"}], last takes the rest
+    updated_at: Mapped[datetime] = mapped_column(DateTime)
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("staff_users.id"))

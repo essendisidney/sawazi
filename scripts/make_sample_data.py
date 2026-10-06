@@ -87,10 +87,17 @@ for m in members:
             "principal": principal, "balance": balance, "inst": inst, "arrears": arrears, "dpd": dpd,
             "via": via, "disbursed": disb.strftime("%d/%m/%Y"),
         })
+# Arrears breakdown as a core system would report it. Derived (no random draws) so the rest of the data is unchanged.
+def arrears_parts(l):
+    penalty = round(l["arrears"] * 0.05) if l["dpd"] > 30 else 0
+    return penalty, round(l["arrears"] * 0.2)
+
+
 w("loans.csv", ["Loan No", "Member No", "Product", "Principal", "Balance", "Installment", "Arrears",
-                "Days In Arrears", "Disbursement Date", "Repayment Mode"],
+                "Penalty Arrears", "Interest Arrears", "Days In Arrears", "Disbursement Date", "Repayment Mode"],
   [[l["loan_no"], l["member_no"], l["product"], f"{l['principal']:,.2f}", f"{l['balance']:,.2f}",
-    f"{l['inst']:,.2f}", f"{l['arrears']:,.2f}", l["dpd"], l["disbursed"], l["via"]] for l in loans])
+    f"{l['inst']:,.2f}", f"{l['arrears']:,.2f}", *(f"{x:,.2f}" for x in arrears_parts(l)),
+    l["dpd"], l["disbursed"], l["via"]] for l in loans])
 
 # ---- M-Pesa paybill statement (Safaricom org portal layout)
 def typo(s):

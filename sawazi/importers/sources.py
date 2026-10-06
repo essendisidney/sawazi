@@ -112,6 +112,17 @@ def import_loans(s: Session, institution_id: int, content) -> ImportResult:
         ln.balance_cents = to_cents(pick(row, "balance", "outstanding", "loan_balance"))
         ln.installment_cents = to_cents(pick(row, "installment", "instalment", "monthly_repayment", "repayment"))
         ln.arrears_cents = to_cents(pick(row, "arrears", "arrears_amount", "amount_in_arrears"))
+        penalty_cols = ("penalty_arrears", "penalty_in_arrears", "penalties_due", "penalty")
+        interest_cols = ("interest_arrears", "interest_in_arrears", "interest_due")
+        known = any(c in row for c in penalty_cols + interest_cols)  # the export carries a breakdown
+        penalty, interest = to_cents(pick(row, *penalty_cols)), to_cents(pick(row, *interest_cols))
+        if known and (penalty < 0 or interest < 0 or penalty + interest > ln.arrears_cents):
+            # The parts must fit inside the arrears; otherwise we cannot know what is principal.
+            res.rejected.append(f"row {i}: {loan_no} penalty + interest arrears exceed total arrears; "
+                                f"breakdown ignored, arrears kept as one amount")
+            known, penalty, interest = False, 0, 0
+        ln.penalty_arrears_cents, ln.interest_arrears_cents = penalty, interest
+        ln.arrears_breakdown = known
         ln.days_in_arrears = int(float(pick(row, "days_in_arrears", "days_arrears", "dpd") or 0))
         ln.disbursed_on = to_date(pick(row, "disbursed_on", "disbursement_date", "date_disbursed"))
         ln.next_due_on = to_date(pick(row, "next_due_on", "next_due_date", "due_date"))

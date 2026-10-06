@@ -32,6 +32,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.5; }
 h1, h2, h3 { font-family: var(--f-display); margin: 0; text-wrap: balance; }
@@ -83,6 +84,9 @@ label { display: grid; gap: 4px; font-size: 0.85rem; font-weight: 500; }
 .row-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
 .row-form > label { flex: 1 1 180px; }
 .row-form > input { flex: 1 1 220px; width: auto; }
+.check { display: flex; gap: 10px; align-items: center; font-weight: 500; font-size: 0.9rem; }
+.check input { width: 18px; height: 18px; flex: none; }
+.steps { display: grid; gap: 16px; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chips button { border-radius: 99px; font-size: 0.8rem; padding: 4px 11px; }
 .chips button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
