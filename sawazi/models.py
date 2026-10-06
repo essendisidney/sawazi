@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from sqlalchemy import (
+    Boolean,
     Date,
     DateTime,
     ForeignKey,
@@ -172,3 +173,33 @@ class Reminder(Base):
     priority_score: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="queued")  # queued | sent | done
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class StaffUser(Base):
+    """A person at one institution who uses Sawazi. Email is unique platform-wide: one login, one institution."""
+
+    __tablename__ = "staff_users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    email: Mapped[str] = mapped_column(String(254), unique=True)
+    name: Mapped[str] = mapped_column(String(200))
+    role: Mapped[str] = mapped_column(String(20))  # admin | accountant | credit_officer | viewer
+    password_hash: Mapped[str] = mapped_column(String(200))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class StaffSession(Base):
+    """A login. Only the SHA-256 of the bearer token is stored."""
+
+    __tablename__ = "staff_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("staff_users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime)

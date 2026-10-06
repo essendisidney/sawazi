@@ -29,17 +29,42 @@ It sits beside any core banking system and works from the CSV/Excel exports ever
 pip install -r requirements.txt
 python scripts/make_sample_data.py      # fictional test data
 python scripts/run_demo.py              # full pipeline -> demo_output.json
-python -m pytest -q                     # 15 tests
+python -m pytest -q                     # 34 tests
 uvicorn sawazi.api:app --reload          # API at http://localhost:8000/docs
 ```
 
 Uses SQLite locally. For production set `SAWAZI_DB_URL=postgresql+psycopg://...` and `SAWAZI_API_KEY`.
 
+## Staff login and roles
+
+Every staff user belongs to exactly one institution and only ever sees that institution's data
+(another institution's data returns 404). Log in with `POST /auth/login`, then send
+`Authorization: Bearer <token>`. Sessions last 12 hours; logout, password change and deactivation take effect immediately.
+
+| Role | Can |
+|---|---|
+| viewer | dashboard, exceptions list, reminders |
+| credit_officer | viewer + build the collections queue |
+| accountant | credit_officer + imports, matching, check-off reconcile, clear suspense / resolve exceptions, postings export |
+| admin | accountant + manage staff users |
+
+`SAWAZI_API_KEY` is the Pesara platform key (header `X-API-Key`). It is only for creating institutions and
+each institution's first admin, and is never given to an institution. If it is not set those endpoints are closed.
+
+```bash
+curl -X POST localhost:8000/institutions -H "X-API-Key: $SAWAZI_API_KEY" -H "Content-Type: application/json" -d '{"name":"Ufanisi SACCO"}'
+curl -X POST localhost:8000/institutions/1/admin -H "X-API-Key: $SAWAZI_API_KEY" -H "Content-Type: application/json"      -d '{"email":"admin@ufanisi.co.ke","name":"Admin","role":"admin","password":"at-least-10-chars"}'
+```
+
 ## API
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/institutions` | Create a SACCO/MFI tenant |
+| POST | `/institutions` | Create a SACCO/MFI tenant (platform key) |
+| POST | `/institutions/{id}/admin` | Create the institution's first admin (platform key) |
+| POST | `/auth/login`, `/auth/logout`, `/auth/password`; GET `/auth/me` | Staff login, logout, change own password, who am I |
+| GET/POST | `/institutions/{id}/users` | List / add staff (admin) |
+| PATCH | `/institutions/{id}/users/{user_id}` | Change role, deactivate, reset password (admin) |
 | POST | `/institutions/{id}/import/{kind}` | `members`, `loans`, `mpesa`, `bank`, `checkoff_schedule`, `checkoff_remittance` (check-off needs `employer` and `period=YYYY-MM`) |
 | POST | `/institutions/{id}/checkoff/reconcile` | Reconcile one employer and period |
 | POST | `/institutions/{id}/match` | Match and allocate everything pending |
@@ -55,6 +80,7 @@ Uses SQLite locally. For production set `SAWAZI_DB_URL=postgresql+psycopg://...`
 ```
 sawazi/
   models.py            multi-tenant data model (money in integer cents)
+  auth.py              staff login, roles, institution scoping
   importers/           CSV parsing for every source
   engine/matching.py   member matching, allocation, anomaly flags
   engine/checkoff.py   check-off reconciliation
@@ -68,7 +94,7 @@ tests/                 pytest suite
 
 - Send SMS through Africa's Talking, with delivery status
 - Daraja C2B callbacks for real-time matching (statements stay as the fallback)
-- Staff login, roles and an audit log of every manual action
+- Audit log of every manual action; per-institution API keys
 - Staff web console for suspense clearing and the collections queue
 - Allocation rules configurable per institution (penalties, interest, principal order)
 
