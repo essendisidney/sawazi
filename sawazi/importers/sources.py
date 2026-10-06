@@ -14,7 +14,8 @@ from datetime import date, datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import CheckoffRemittance, CheckoffSchedule, ExceptionItem, Loan, Member, MpesaCallback, Transaction
+from ..models import (CheckoffRemittance, CheckoffSchedule, ExceptionItem, Loan, LoanApplication, Member,
+                      MpesaCallback, Transaction)
 from .common import (
     norm_phone,
     pick,
@@ -127,6 +128,22 @@ def _apply_member_figures(m: Member, row: dict, i: int, res: ImportResult) -> bo
     return touched
 
 
+def _link_disbursed(s: Session, institution_id: int, new_loans: list[Loan]) -> None:
+    """A loan Sawazi handed to the core system comes back in the loans export once disbursed. Link it only when
+    there is exactly one exported application for that member and amount: never guess between two."""
+    if not new_loans:
+        return
+    waiting = list(s.scalars(select(LoanApplication).where(LoanApplication.institution_id == institution_id,
+                                                           LoanApplication.status == "exported")))
+    for ln in new_loans:
+        same = [a for a in waiting if a.member_id == ln.member_id and a.amount_cents == ln.principal_cents]
+        if len(same) == 1:
+            a = same[0]
+            a.status, a.disbursed_loan_id = "disbursed", ln.id
+            a.disbursed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            waiting.remove(a)
+
+
 def import_member_balances(s: Session, institution_id: int, content) -> ImportResult:
     """Monthly balances (deposits, shares) or payroll figures (gross, net pay) for existing members.
     Never creates members; unknown member numbers are listed."""
@@ -154,6 +171,7 @@ def import_loans(s: Session, institution_id: int, content) -> ImportResult:
         ln.loan_no: ln
         for ln in s.scalars(select(Loan).where(Loan.institution_id == institution_id))
     }
+    new_loans: list[Loan] = []
     for i, row in enumerate(read_rows(content), start=2):
         loan_no = pick(row, "loan_no", "loan_number", "loan_id", "account_no")
         member_no = pick(row, "member_no", "member_number", "memberno")
@@ -172,6 +190,7 @@ def import_loans(s: Session, institution_id: int, content) -> ImportResult:
             )
             s.add(ln)
             existing[loan_no] = ln
+            new_loans.append(ln)
             res.created += 1
         else:
             res.skipped_duplicates += 1
@@ -197,6 +216,8 @@ def import_loans(s: Session, institution_id: int, content) -> ImportResult:
         via = pick(row, "repays_via", "repayment_mode", "mode").lower()
         ln.repays_via = "checkoff" if "check" in via else ("bank" if "bank" in via else "mpesa")
         ln.status = "closed" if ln.balance_cents <= 0 else "active"
+    s.flush()
+    _link_disbursed(s, institution_id, new_loans)
     s.commit()
     return res
 

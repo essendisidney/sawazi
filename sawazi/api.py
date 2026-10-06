@@ -35,7 +35,7 @@ from .engine import allocation, appraisal
 from .engine.matching import allocate, run_matching
 from .importers import sources
 from .importers.common import norm_phone
-from .models import (Allocation, AllocationRules, ApiKey, LoanProduct, AuditEvent, ExceptionItem, Institution, Loan, Member, MpesaCallback,
+from .models import (Allocation, AllocationRules, ApiKey, LoanApplication, LoanDecision, LoanProduct, AuditEvent, ExceptionItem, Institution, Loan, Member, MpesaCallback,
                      Reminder, SmsMessage, SmsOptOut, SmsSettings, StaffSession, StaffUser, Transaction)
 
 @asynccontextmanager
@@ -1198,6 +1198,220 @@ def appraisal_what_if(institution_id: int, body: WhatIfIn, s: Session = Depends(
     a = appraisal.appraise(_cents(body.amount_kes), body.term_months, _product_rules(p), facts, loans, [],
                            auth.utcnow().date())
     return {"member_no": m.member_no, "member": m.name, "product": p.code, **_appraisal_out(a)}
+
+
+# ---------------------------------------------------------------- loan applications
+
+class ApplicationIn(BaseModel):
+    member_no: str
+    product_id: int
+    amount_kes: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    term_months: int = Field(ge=1, le=240)
+    purpose: str | None = Field(default=None, max_length=500)
+
+
+class ApplicationPatch(BaseModel):
+    amount_kes: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
+    term_months: int | None = Field(default=None, ge=1, le=240)
+    purpose: str | None = Field(default=None, max_length=500)
+
+
+class DecisionIn(BaseModel):
+    decision: str = Field(pattern="^(approve|decline)$")
+    note: str | None = Field(default=None, max_length=1000)
+    override_reason: str | None = Field(default=None, min_length=10, max_length=1000,
+                                        description="required to approve when a check failed or is unknown")
+
+
+def _get_application(s: Session, institution_id: int, app_id: int, lock: bool = False) -> LoanApplication:
+    q = select(LoanApplication).where(LoanApplication.id == app_id, LoanApplication.institution_id == institution_id)
+    a = s.scalar(q.with_for_update() if lock else q)
+    if not a:
+        raise HTTPException(404, "application not found")
+    return a
+
+
+def _appraise_application(s: Session, a: LoanApplication) -> appraisal.Appraisal:
+    prod = s.get(LoanProduct, a.product_id)
+    m = s.get(Member, a.member_id)
+    _, facts, loans = _member_facts(s, a.institution_id, m.member_no)
+    return appraisal.appraise(a.amount_cents, a.term_months, _product_rules(prod), facts, loans,
+                              _guarantees_for(s, a), auth.utcnow().date())
+
+
+def _guarantees_for(s: Session, a: LoanApplication) -> list:
+    return []  # guarantor requests arrive with the guarantor network
+
+
+def _application_out(s: Session, a: LoanApplication, live: bool = False) -> dict:
+    m, prod = s.get(Member, a.member_id), s.get(LoanProduct, a.product_id)
+    decisions = s.scalars(select(LoanDecision).where(LoanDecision.application_id == a.id).order_by(LoanDecision.id))
+    out = {"id": a.id, "status": a.status, "member_no": m.member_no, "member": m.name,
+           "product_id": prod.id, "product": prod.code, "product_name": prod.name,
+           "amount_kes": a.amount_cents / 100, "term_months": a.term_months, "purpose": a.purpose,
+           "approvals_needed": a.approvals_needed, "override_reason": a.override_reason,
+           "prepared_by_user_id": a.prepared_by_user_id, "created_at": a.created_at,
+           "submitted_at": a.submitted_at, "decided_at": a.decided_at, "exported_at": a.exported_at,
+           "disbursed_at": a.disbursed_at, "appraisal": a.appraisal, "appraisal_outcome": a.appraisal_outcome,
+           "decisions": [{"user_id": d.user_id, "decision": d.decision, "note": d.note,
+                          "appraisal_outcome": d.appraisal_outcome, "at": d.at} for d in decisions]}
+    if live and a.status in ("draft", "submitted"):
+        out["appraisal"] = _appraisal_out(_appraise_application(s, a))
+        out["appraisal_outcome"] = out["appraisal"]["outcome"]
+    return out
+
+
+@app.post("/institutions/{institution_id}/loan-applications", tags=["loans"])
+def create_application(institution_id: int, body: ApplicationIn, s: Session = Depends(get_session),
+                       who: Principal = Depends(require("loan_apply"))):
+    prod = _get_product(s, institution_id, body.product_id)
+    if not prod.active:
+        raise HTTPException(409, f"product {prod.code} is not active")
+    m, _, _ = _member_facts(s, institution_id, body.member_no)
+    a = LoanApplication(institution_id=institution_id, member_id=m.id, product_id=prod.id,
+                        amount_cents=_cents(body.amount_kes), term_months=body.term_months, purpose=body.purpose,
+                        status="draft", prepared_by_user_id=who.id, created_at=auth.utcnow())
+    s.add(a)
+    s.flush()
+    audit.record(s, who, "loan_application.create", "loan_application", a.id,
+                 after={"member_no": m.member_no, "product": prod.code, "amount_cents": a.amount_cents,
+                        "term_months": a.term_months})
+    s.commit()
+    return _application_out(s, a, live=True)
+
+
+@app.get("/institutions/{institution_id}/loan-applications", dependencies=[Depends(require("read"))], tags=["loans"])
+def list_applications(institution_id: int, status: str | None = None, limit: int = Query(100, ge=1, le=500),
+                      s: Session = Depends(get_session)):
+    q = select(LoanApplication).where(LoanApplication.institution_id == institution_id)
+    if status:
+        q = q.where(LoanApplication.status.in_(status.split(",")))
+    return [_application_out(s, a) for a in s.scalars(q.order_by(LoanApplication.id.desc()).limit(limit))]
+
+
+@app.get("/institutions/{institution_id}/loan-applications/{app_id}", dependencies=[Depends(require("read"))],
+         tags=["loans"])
+def get_application(institution_id: int, app_id: int, s: Session = Depends(get_session)):
+    """Drafts and submitted applications are appraised afresh on every read; decided ones show their snapshot."""
+    return _application_out(s, _get_application(s, institution_id, app_id), live=True)
+
+
+@app.patch("/institutions/{institution_id}/loan-applications/{app_id}", tags=["loans"])
+def update_application(institution_id: int, app_id: int, body: ApplicationPatch, s: Session = Depends(get_session),
+                       who: Principal = Depends(require("loan_apply"))):
+    a = _get_application(s, institution_id, app_id, lock=True)
+    if a.status != "draft":
+        raise HTTPException(409, "only a draft can be changed; withdraw and start again")
+    before = {"amount_cents": a.amount_cents, "term_months": a.term_months, "purpose": a.purpose}
+    if body.amount_kes is not None:
+        a.amount_cents = _cents(body.amount_kes)
+    if body.term_months is not None:
+        a.term_months = body.term_months
+    if body.purpose is not None:
+        a.purpose = body.purpose
+    after = {"amount_cents": a.amount_cents, "term_months": a.term_months, "purpose": a.purpose}
+    audit.record(s, who, "loan_application.update", "loan_application", a.id,
+                 before={k: v for k, v in before.items() if after[k] != v},
+                 after={k: v for k, v in after.items() if before[k] != v})
+    s.commit()
+    return _application_out(s, a, live=True)
+
+
+@app.post("/institutions/{institution_id}/loan-applications/{app_id}/submit", tags=["loans"])
+def submit_application(institution_id: int, app_id: int, s: Session = Depends(get_session),
+                       who: Principal = Depends(require("loan_apply"))):
+    """Hand the application to the approvers, with the appraisal as it stands now."""
+    a = _get_application(s, institution_id, app_id, lock=True)
+    if a.status != "draft":
+        raise HTTPException(409, f"application is already {a.status}")
+    result = _appraise_application(s, a)
+    prod = s.get(LoanProduct, a.product_id)
+    a.appraisal, a.appraisal_outcome = _appraisal_out(result), result.outcome
+    above = prod.second_approval_above_cents is not None and a.amount_cents > prod.second_approval_above_cents
+    a.approvals_needed = 2 if above else 1
+    a.status, a.submitted_at = "submitted", auth.utcnow()
+    audit.record(s, who, "loan_application.submit", "loan_application", a.id,
+                 after={"appraisal_outcome": result.outcome, "approvals_needed": a.approvals_needed})
+    s.commit()
+    return _application_out(s, a, live=True)
+
+
+@app.post("/institutions/{institution_id}/loan-applications/{app_id}/withdraw", tags=["loans"])
+def withdraw_application(institution_id: int, app_id: int, note: str = Query(..., min_length=3),
+                         s: Session = Depends(get_session), who: Principal = Depends(require("loan_apply"))):
+    a = _get_application(s, institution_id, app_id, lock=True)
+    if a.status not in ("draft", "submitted"):
+        raise HTTPException(409, f"an application that is {a.status} cannot be withdrawn")
+    before = a.status
+    a.status, a.decided_at = "withdrawn", auth.utcnow()
+    audit.record(s, who, "loan_application.withdraw", "loan_application", a.id, before={"status": before},
+                 after={"status": "withdrawn"}, note=note)
+    s.commit()
+    return _application_out(s, a)
+
+
+@app.post("/institutions/{institution_id}/loan-applications/{app_id}/decide", tags=["loans"])
+def decide_application(institution_id: int, app_id: int, body: DecisionIn, s: Session = Depends(get_session),
+                       who: Principal = Depends(require("loan_approve"))):
+    """An approver's decision. Never on an application they prepared; one decline ends it; approval needs the
+    product's number of distinct approvers. Approving despite a failed or unknown check needs a written reason."""
+    a = _get_application(s, institution_id, app_id, lock=True)  # row lock: two approvers at once stay consistent
+    if a.status != "submitted":
+        raise HTTPException(409, f"application is {a.status}, not waiting for a decision")
+    if a.prepared_by_user_id == who.id:
+        raise HTTPException(403, "you prepared this application, so another approver must decide")
+    if s.scalar(select(LoanDecision.id).where(LoanDecision.application_id == a.id, LoanDecision.user_id == who.id)):
+        raise HTTPException(409, "you have already decided on this application")
+    result = _appraise_application(s, a)  # decide on today's figures, not the ones at submission
+    if body.decision == "approve" and result.outcome != "passes" and not body.override_reason:
+        raise HTTPException(422, f"the appraisal {result.outcome}: give an override_reason to approve anyway")
+    now = auth.utcnow()
+    s.add(LoanDecision(institution_id=institution_id, application_id=a.id, user_id=who.id, decision=body.decision,
+                       note=body.note, appraisal_outcome=result.outcome, at=now))
+    s.flush()
+    a.appraisal, a.appraisal_outcome = _appraisal_out(result), result.outcome
+    if body.decision == "approve" and result.outcome != "passes":
+        a.override_reason = "\n".join(x for x in (a.override_reason, body.override_reason) if x)
+    approvals = s.scalar(select(func.count()).where(LoanDecision.application_id == a.id,
+                                                    LoanDecision.decision == "approve"))
+    before = a.status
+    if body.decision == "decline":
+        a.status, a.decided_at = "declined", now
+    elif approvals >= a.approvals_needed:
+        a.status, a.decided_at = "approved", now
+    audit.record(s, who, f"loan_application.{body.decision}", "loan_application", a.id,
+                 before={"status": before}, note=body.note,
+                 after={"status": a.status, "appraisal_outcome": result.outcome,
+                        "approvals": approvals, "approvals_needed": a.approvals_needed,
+                        "override_reason": body.override_reason if body.decision == "approve" else None})
+    s.commit()
+    return _application_out(s, a)
+
+
+@app.post("/institutions/{institution_id}/loan-applications/export.csv", tags=["loans"])
+def export_approved(institution_id: int, s: Session = Depends(get_session),
+                    who: Principal = Depends(require("loan_export"))):
+    """Approved loans not yet handed over, as a file for the core system to disburse. Each loan is in exactly
+    one export; it is marked exported here. Sawazi never disburses."""
+    apps = list(s.scalars(select(LoanApplication).where(LoanApplication.institution_id == institution_id,
+                                                        LoanApplication.status == "approved")
+                          .order_by(LoanApplication.id).with_for_update()))
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["sawazi_ref", "member_no", "member_name", "product_code", "amount", "term_months", "approved_at",
+                "approved_by", "with_exceptions"])
+    now = auth.utcnow()
+    for a in apps:
+        m, prod = s.get(Member, a.member_id), s.get(LoanProduct, a.product_id)
+        approvers = [s.get(StaffUser, d.user_id).name for d in s.scalars(
+            select(LoanDecision).where(LoanDecision.application_id == a.id, LoanDecision.decision == "approve"))]
+        w.writerow([f"SWZ-{a.id}", m.member_no, m.name, prod.code, f"{a.amount_cents / 100:.2f}", a.term_months,
+                    a.decided_at.strftime("%Y-%m-%d %H:%M"), "; ".join(approvers), "yes" if a.override_reason else "no"])
+        a.status, a.exported_at = "exported", now
+    audit.record(s, who, "loan_application.export", after={"applications": [a.id for a in apps]})
+    s.commit()
+    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
+                             headers={"Content-Disposition": f"attachment; filename=sawazi_loans_{now:%Y%m%d_%H%M}.csv"})
 
 
 # ---------------------------------------------------------------- staff web console

@@ -371,3 +371,46 @@ class LoanProduct(Base):
     second_approval_above_cents: Mapped[int | None] = mapped_column(BigInteger)  # two approvers above this
     created_at: Mapped[datetime] = mapped_column(DateTime)
     updated_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class LoanApplication(Base):
+    """A loan request from capture to hand-over. Sawazi appraises and records decisions; the core system lends.
+    draft -> submitted -> approved | declined | withdrawn; approved -> exported (to the core) -> disbursed."""
+
+    __tablename__ = "loan_applications"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id"), index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("loan_products.id"))
+    amount_cents: Mapped[int] = mapped_column(BigInteger)
+    term_months: Mapped[int] = mapped_column(Integer)
+    purpose: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    appraisal: Mapped[dict | None] = mapped_column(JSON)  # snapshot at submission / latest decision
+    appraisal_outcome: Mapped[str | None] = mapped_column(String(20))  # passes | fails | incomplete
+    approvals_needed: Mapped[int] = mapped_column(Integer, default=1)
+    override_reason: Mapped[str | None] = mapped_column(Text)  # set when approved despite failed/unknown checks
+    prepared_by_user_id: Mapped[int] = mapped_column(ForeignKey("staff_users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    exported_at: Mapped[datetime | None] = mapped_column(DateTime)
+    disbursed_loan_id: Mapped[int | None] = mapped_column(ForeignKey("loans.id"))
+    disbursed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class LoanDecision(Base):
+    """One approver's decision on an application. An approver never decides on their own application."""
+
+    __tablename__ = "loan_decisions"
+    __table_args__ = (UniqueConstraint("application_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    application_id: Mapped[int] = mapped_column(ForeignKey("loan_applications.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("staff_users.id"))
+    decision: Mapped[str] = mapped_column(String(10))  # approve | decline
+    note: Mapped[str | None] = mapped_column(Text)
+    appraisal_outcome: Mapped[str] = mapped_column(String(20))  # what the approver saw
+    at: Mapped[datetime] = mapped_column(DateTime)

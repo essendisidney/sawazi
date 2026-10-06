@@ -135,9 +135,9 @@ def test_change_password_revokes_other_sessions(env):
 
 ROLE_CASES = [
     # (method, path, roles allowed)
-    ("get", "/institutions/1/dashboard", {"admin", "accountant", "credit_officer", "viewer"}),
-    ("get", "/institutions/1/exceptions", {"admin", "accountant", "credit_officer", "viewer"}),
-    ("get", "/institutions/1/reminders", {"admin", "accountant", "credit_officer", "viewer"}),
+    ("get", "/institutions/1/dashboard", {"admin", "accountant", "credit_officer", "approver", "viewer"}),
+    ("get", "/institutions/1/exceptions", {"admin", "accountant", "credit_officer", "approver", "viewer"}),
+    ("get", "/institutions/1/reminders", {"admin", "accountant", "credit_officer", "approver", "viewer"}),
     ("post", "/institutions/1/collections/queue", {"admin", "accountant", "credit_officer"}),
     ("post", "/institutions/1/match", {"admin", "accountant"}),
     ("get", "/institutions/1/exports/postings.csv", {"admin", "accountant"}),
@@ -191,7 +191,7 @@ def test_cannot_see_or_touch_another_institution(env):
 def test_users_list_is_scoped(env):
     c, _ = env
     users = c.get("/institutions/1/users", headers=login(c, "admin@a.test")).json()
-    assert len(users) == 4 and {u["institution_id"] for u in users} == {1}
+    assert len(users) == len(auth.ROLES) and {u["institution_id"] for u in users} == {1}
 
 
 # ---------------------------------------------------------------- user management

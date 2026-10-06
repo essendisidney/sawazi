@@ -40,7 +40,7 @@ def test_me_lists_permissions_and_institution(env):
     viewer = c.get("/auth/me", headers=login(c, "viewer@a.test")).json()
     assert viewer["institution_name"] == "SACCO A" and viewer["permissions"] == ["read"]
     officer = c.get("/auth/me", headers=login(c, "credit_officer@a.test")).json()
-    assert set(officer["permissions"]) == {"read", "collections", "send_sms"}
+    assert set(officer["permissions"]) == {"read", "collections", "send_sms", "loan_apply"}
     admin = c.get("/auth/me", headers=login(c, "admin@a.test")).json()
     assert {"manage_users", "resolve", "audit", "sms_settings"} <= set(admin["permissions"])
 
