@@ -135,7 +135,8 @@ function renderLogin(message) {
       await start();
     });
   } },
-    h("div", null, h("span", { class: "mark" }, "Sawazi"), " ", h("span", { class: "muted small" }, "by Pesara")),
+    h("div", { class: "login-brand" }, h("img", { src: "logo.svg", alt: "", width: "44", height: "44" }),
+      h("div", null, h("div", { class: "mark" }, "sawazi"), h("div", { class: "by" }, "BY PESARA"))),
     h("h1", null, "Staff console"),
     message ? note("info", message) : null,
     h("label", null, "Email", email),
@@ -196,7 +197,9 @@ function shell(name, content) {
         v.label, n ? h("span", { class: "badge", "aria-label": `${n} open` }, n) : null);
     }));
   const top = h("header", { class: "top" }, h("div", { class: "top-in" },
-    h("div", { class: "brand" }, h("span", { class: "mark" }, "Sawazi"), h("span", { class: "inst" }, state.me.institution_name || "")),
+    h("a", { class: "brand", href: "#/dashboard", "aria-label": "Sawazi dashboard" },
+      h("img", { src: "logo.svg", alt: "", width: "28", height: "28" }), h("span", { class: "mark" }, "sawazi"),
+      h("span", { class: "inst" }, state.me.institution_name || "")),
     nav,
     h("div", { class: "who" },
       h("span", null, state.me.name, " ", h("span", { class: "muted" }, `· ${state.me.role.replace("_", " ")}`)),

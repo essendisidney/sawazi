@@ -247,6 +247,7 @@ sawazi/
   engine/collections.py arrears ranking, messages, PAR
   api.py               FastAPI app
 scripts/               sample data generator and demo run
+brand/                 logo: mark, lockup, one-colour version, preview sheet
 tests/                 pytest suite
 ```
 

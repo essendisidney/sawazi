@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 100" role="img" aria-labelledby="t">
+  <title id="t">Sawazi by Pesara</title>
+  <!-- Horizontal lockup. The wordmark is live text in Bricolage Grotesque 700; convert it to outlines
+       in Figma or Inkscape before sending to a printer. -->
+  <rect width="100" height="100" rx="24" fill="#0d1f18"/>
+  <path d="M72 22H42a14 14 0 0 0 0 28h7" fill="none" stroke="#4fc79a" stroke-width="13"/>
+  <circle cx="72" cy="22" r="6.5" fill="#4fc79a"/>
+  <path d="M51 50h7a14 14 0 0 1 0 28H28" fill="none" stroke="#f2b84b" stroke-width="13"/>
+  <circle cx="28" cy="78" r="6.5" fill="#f2b84b"/>
+  <text x="124" y="66" font-family="'Bricolage Grotesque', 'Segoe UI', system-ui, sans-serif" font-weight="700"
+        font-size="60" letter-spacing="-1.5" fill="#0d1f18">sawazi</text>
+  <text x="127" y="92" font-family="'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif" font-weight="500"
+        font-size="15" letter-spacing="2.5" fill="#5d6a63">BY PESARA</text>
+</svg>
