@@ -67,7 +67,8 @@ class Appraisal:
     outcome: str  # passes | fails | incomplete
     checks: list[Check]
     instalment_cents: int
-    max_eligible_cents: int | None  # None when a figure it depends on is unknown
+    max_eligible_cents: int  # the lowest of the limits that are known
+    max_eligible_partial: bool  # True when a limit could not be worked out (e.g. no payslip): it may be lower
     required_cover_cents: int
     accepted_cover_cents: int
     limits: dict = field(default_factory=dict)
@@ -218,5 +219,5 @@ def appraise(amount_cents: int, term_months: int, product: Product, member: Memb
     statuses = {c.status for c in checks}
     outcome = "fails" if FAIL in statuses else "incomplete" if statuses & {UNKNOWN, PENDING} else "passes"
     known = [v for v in limits.values() if v is not None]
-    max_eligible = None if any(v is None for v in limits.values()) else min(known)
-    return Appraisal(outcome, checks, inst, max_eligible, required, cover, limits)
+    partial = any(v is None for v in limits.values())
+    return Appraisal(outcome, checks, inst, min(known), partial, required, cover, limits)

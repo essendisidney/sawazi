@@ -1179,7 +1179,8 @@ def _member_facts(s: Session, institution_id: int, member_no: str):
 
 def _appraisal_out(a: appraisal.Appraisal) -> dict:
     return {"outcome": a.outcome, "instalment_kes": a.instalment_cents / 100,
-            "max_eligible_kes": a.max_eligible_cents / 100 if a.max_eligible_cents is not None else None,
+            "max_eligible_kes": a.max_eligible_cents / 100, "max_eligible_partial": a.max_eligible_partial,
+            "unknown_limits": [k for k, v in a.limits.items() if v is None],
             "required_cover_kes": a.required_cover_cents / 100, "accepted_cover_kes": a.accepted_cover_cents / 100,
             "checks": [{"code": c.code, "status": c.status, "message": c.message} for c in a.checks]}
 
@@ -1591,18 +1592,37 @@ maxlength="6" required></label><button type="submit" class="primary">Accept: I g
     return HTMLResponse(G.page("Guarantee", head, alerts, forms))
 
 
+_CONSENT_NOTES = {
+    "pin": ("PIN sent. It works for 10 minutes.", ""),
+    "pin-limit": ("", "Too many PINs requested. Contact your SACCO."),
+    "pin-failed": ("", "We could not send the PIN. Try again in a minute."),
+    "pin-first": ("", "Ask for a PIN first (or a new one: it lasts 10 minutes)."),
+    "pin-locked": ("", "Too many wrong PINs. Ask for a new PIN."),
+    "pin-wrong": ("", "That PIN is not right."),
+    "capacity": ("", "Your deposits no longer cover this amount. Contact your SACCO."),
+}
+
+
+def _back(token: str, code: str | None = None) -> RedirectResponse:
+    """Post/redirect/get: refreshing the page never re-sends a form (and never sends another PIN)."""
+    return RedirectResponse(f"/g/{token}" + (f"?m={code}" if code else ""), status_code=303)
+
+
 @app.get("/g/{token}", include_in_schema=False)
-def consent_page(token: str, s: Session = Depends(get_session)):
-    return _consent_page(s, _by_token(s, token), token)
+def consent_page(token: str, m: str | None = None, s: Session = Depends(get_session)):
+    notice, error = _CONSENT_NOTES.get(m or "", ("", ""))
+    return _consent_page(s, _by_token(s, token), token, notice=notice, error=error)
 
 
 @app.post("/g/{token}/pin", include_in_schema=False)
 def consent_pin(token: str, request: Request, s: Session = Depends(get_session), provider=Depends(sms.get_provider)):
     g = _by_token(s, token)
-    if g is None or guarantors.effective_status(g) != "requested":
+    if g is None:
         return _consent_page(s, g, token)
+    if guarantors.effective_status(g) != "requested":
+        return _back(token)
     if g.pins_sent >= guarantors.MAX_PINS:
-        return _consent_page(s, g, token, error="Too many PINs requested. Contact your SACCO.")
+        return _back(token, "pin-limit")
     pin = f"{secrets.randbelow(10 ** 6):06d}"
     g.pin_hash, g.pin_expires_at = guarantors.pin_hash(g, pin), auth.utcnow() + timedelta(minutes=guarantors.PIN_MINUTES)
     g.pin_attempts, g.pins_sent = 0, g.pins_sent + 1
@@ -1613,33 +1633,35 @@ def consent_pin(token: str, request: Request, s: Session = Depends(get_session),
         provider.send(g.phone, guarantors.pin_sms(inst, s.get(Member, a.member_id), pin), settings.service_name)
     except Exception:
         log.exception("guarantor PIN SMS failed")
-        return _consent_page(s, g, token, error="We could not send the PIN. Try again in a minute.")
-    return _consent_page(s, g, token, notice="PIN sent. It works for 10 minutes.")
+        return _back(token, "pin-failed")
+    return _back(token, "pin")
 
 
 @app.post("/g/{token}/accept", include_in_schema=False)
 def consent_accept(token: str, request: Request, pin: str = Form(""), s: Session = Depends(get_session)):
     pin = pin.strip()
     g = _by_token(s, token)
-    if g is None or guarantors.effective_status(g) != "requested":
+    if g is None:
         return _consent_page(s, g, token)
+    if guarantors.effective_status(g) != "requested":
+        return _back(token)
     g = s.scalar(select(Guarantee).where(Guarantee.id == g.id).with_for_update())
     a = s.get(LoanApplication, g.application_id)
     if a.status not in guarantors.OPEN_APPLICATION:
-        return _consent_page(s, g, token)
+        return _back(token)
     if g.pin_hash is None or g.pin_expires_at <= auth.utcnow():
-        return _consent_page(s, g, token, error="Ask for a PIN first (or a new one: it lasts 10 minutes).")
+        return _back(token, "pin-first")
     if g.pin_attempts >= guarantors.MAX_PIN_ATTEMPTS:
-        return _consent_page(s, g, token, error="Too many wrong PINs. Ask for a new PIN.")
+        return _back(token, "pin-locked")
     if not hmac.compare_digest(guarantors.pin_hash(g, pin), g.pin_hash):
         g.pin_attempts += 1
         s.commit()
-        return _consent_page(s, g, token, error="That PIN is not right.")
+        return _back(token, "pin-wrong")
     # Capacity again, now, with the guarantor's row locked: two loans cannot both take the same deposits.
     m = s.scalar(select(Member).where(Member.id == g.guarantor_member_id).with_for_update())
     free = guarantors.free_capacity(s, m)
     if free is None or g.amount_cents > free:
-        return _consent_page(s, g, token, error="Your deposits no longer cover this amount. Contact your SACCO.")
+        return _back(token, "capacity")
     ip = request.client.host if request.client else None
     g.status, g.responded_at, g.response_ip = "accepted", auth.utcnow(), ip
     g.pin_hash = None
@@ -1647,21 +1669,23 @@ def consent_accept(token: str, request: Request, pin: str = Form(""), s: Session
                  "guarantee", g.id, before={"status": "requested"},
                  after={"status": "accepted", "amount_cents": g.amount_cents, "phone": g.phone}, ip=ip)
     s.commit()
-    return _consent_page(s, g, token)
+    return _back(token)
 
 
 @app.post("/g/{token}/decline", include_in_schema=False)
 def consent_decline(token: str, request: Request, s: Session = Depends(get_session)):
     g = _by_token(s, token)
-    if g is None or guarantors.effective_status(g) != "requested":
+    if g is None:
         return _consent_page(s, g, token)
+    if guarantors.effective_status(g) != "requested":
+        return _back(token)
     m = s.get(Member, g.guarantor_member_id)
     ip = request.client.host if request.client else None
     g.status, g.responded_at, g.response_ip, g.pin_hash = "declined", auth.utcnow(), ip, None
     audit.record(s, replace(_GUARANTOR, institution_id=g.institution_id, name=m.name), "guarantee.decline",
                  "guarantee", g.id, before={"status": "requested"}, after={"status": "declined"}, ip=ip)
     s.commit()
-    return _consent_page(s, g, token)
+    return _back(token)
 
 
 _GUARANTOR = Principal("member", None, 0, "", "")

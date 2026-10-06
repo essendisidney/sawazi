@@ -107,7 +107,8 @@ def test_full_cover_and_minimum_guarantors():
 def test_fail_outranks_unknown_and_max_eligible():
     no_pay = MemberFacts(None, GOOD.deposits_cents, None, None)
     r = run(amount=999_999_999, member=no_pay)
-    assert r.outcome == "fails" and r.max_eligible_cents is None  # a needed figure is unknown
+    assert r.outcome == "fails" and r.max_eligible_partial  # pay unknown: the limit may be lower
+    assert r.max_eligible_cents == min(v for v in r.limits.values() if v is not None)
     r = run()
     assert r.max_eligible_cents == min(r.limits.values())
 
@@ -159,6 +160,7 @@ def test_what_if(env):
     body = r.json()
     status = {x["code"]: x["status"] for x in body["checks"]}
     assert status["membership"] == "fail" and status["deposits"] == "pass" and status["one_third"] == "unknown"
-    assert body["outcome"] == "fails" and body["max_eligible_kes"] is None
+    assert body["outcome"] == "fails" and body["max_eligible_partial"] and body["unknown_limits"] == ["affordability"]
+    assert body["max_eligible_kes"] == 250_000  # 3x KES 100,000 deposits less KES 50,000 outstanding
     assert c.post("/institutions/1/appraisal/what-if", headers=h,
                   json={"member_no": "M9", "product_id": pid, "amount_kes": 1, "term_months": 1}).status_code == 404

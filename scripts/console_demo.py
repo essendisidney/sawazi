@@ -21,11 +21,12 @@ PORT = int(os.getenv("PORT", "8765"))
 os.environ["SAWAZI_DB_URL"] = f"sqlite:///{DB.as_posix()}"
 os.environ.setdefault("SAWAZI_API_KEY", "console-demo-platform-key")
 os.environ["SAWAZI_SMS_PROVIDER"] = "simulate"
+os.environ.setdefault("SAWAZI_PUBLIC_URL", f"http://localhost:{PORT}")  # guarantor links in simulated SMS
 sys.path.insert(0, str(ROOT))
 
 DEMO_PASSWORD = "demo-password-123"  # fictional demo data only
 DEMO_USERS = [("admin", "Wanjiru Admin"), ("accountant", "Otieno Accountant"),
-              ("credit_officer", "Chebet Credit Officer"), ("viewer", "Mutua Viewer")]
+              ("credit_officer", "Chebet Credit Officer"), ("approver", "Njeri Approver"), ("viewer", "Mutua Viewer")]
 
 
 def seed():
@@ -58,6 +59,18 @@ def seed():
             c.post(f"/institutions/{iid}/checkoff/reconcile", params={"employer": employer, "period": "2026-09"})
         c.post(f"/institutions/{iid}/match").raise_for_status()
         c.post(f"/institutions/{iid}/collections/queue").raise_for_status()
+        for prod in [{"code": "DEV", "name": "Development Loan", "max_amount_kes": 3_000_000, "max_term_months": 48,
+                      "interest_rate_pct": 12, "second_approval_above_kes": 1_000_000},
+                     {"code": "EMG", "name": "Emergency Loan", "max_amount_kes": 200_000, "max_term_months": 12,
+                      "interest_rate_pct": 12, "min_membership_months": 3, "guarantor_cover": "none"}]:
+            c.post(f"/institutions/{iid}/loan-products", json=prod).raise_for_status()
+        c.post("/auth/logout")
+        tok = c.post("/auth/login", json={"email": "credit.officer@ufanisi.test", "password": DEMO_PASSWORD}).json()["token"]
+        c.headers["Authorization"] = f"Bearer {tok}"
+        dev = c.get(f"/institutions/{iid}/loan-products").json()[0]["id"]
+        a = c.post(f"/institutions/{iid}/loan-applications", json={"member_no": "UT00001", "product_id": dev,
+                   "amount_kes": 150_000, "term_months": 24, "purpose": "Greenhouse and drip kit"}).json()
+        c.post(f"/institutions/{iid}/loan-applications/{a['id']}/submit").raise_for_status()
         c.post("/auth/logout")
 
 

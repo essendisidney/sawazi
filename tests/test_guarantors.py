@@ -232,3 +232,15 @@ def test_only_loan_staff_ask(world):
     for who in ("viewer@a.test", "accountant@a.test"):
         assert ask(c, login(c, who), app_id).status_code == 403
     assert ask(c, login(c, "credit_officer@b.test"), app_id).status_code == 404
+
+
+def test_refreshing_after_a_form_never_resends(world):
+    c, _, phone, app_id, _, officer = world
+    ask(c, officer, app_id)
+    token = phone.link()
+    r = c.post(f"/g/{token}/pin", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/g/{token}?m=pin"
+    texts = len(phone.sent)
+    assert "PIN sent" in c.get(r.headers["location"]).text  # a refresh is a GET: no new PIN
+    assert len(phone.sent) == texts
+    assert "PIN sent" not in c.get(f"/g/{token}?m=<script>").text  # only known codes show a message
