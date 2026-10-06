@@ -39,6 +39,7 @@ PERMISSIONS: dict[str, set[str]] = {
     "resolve": {"admin", "accountant"},                            # clear suspense, close flags
     "export": {"admin", "accountant"},                             # postings file (member-level money)
     "manage_users": {"admin"},                                     # staff and API keys
+    "audit": {"admin"},                                            # read the audit log
 }
 # A person must do these, never a machine: they move money to a member or change who has access.
 HUMAN_ONLY = {"resolve", "manage_users"}
@@ -160,8 +161,8 @@ def _api_key(s: Session, token: str) -> ApiKey:
 class Principal:
     """Whoever is calling: a staff user or an institution API key."""
 
-    kind: str  # user | api_key
-    id: int
+    kind: str  # user | api_key | platform | anonymous
+    id: int | None
     institution_id: int
     role: str
     name: str
@@ -170,13 +171,16 @@ class Principal:
     def is_user(self) -> bool:
         return self.kind == "user"
 
+    @classmethod
+    def of(cls, user: StaffUser) -> Principal:
+        return cls("user", user.id, user.institution_id, user.role, user.name)
+
 
 def current_principal(token: str = Depends(bearer_token), s: Session = Depends(get_session)) -> Principal:
     if token.startswith(API_KEY_PREFIX):
         k = _api_key(s, token)
         return Principal("api_key", k.id, k.institution_id, k.role, k.name)
-    user = current_user(current_session(token, s), s)
-    return Principal("user", user.id, user.institution_id, user.role, user.name)
+    return Principal.of(current_user(current_session(token, s), s))
 
 
 def require(action: str):

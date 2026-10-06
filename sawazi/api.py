@@ -9,22 +9,23 @@ import csv
 import io
 from collections import defaultdict
 from contextlib import asynccontextmanager
+from datetime import datetime
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import auth
+from . import audit, auth
 from .auth import API_KEY_ROLES, ROLES, Principal, require
 from .db import get_session, init_db
 from .engine.checkoff import reconcile_checkoff
 from .engine.collections import build_queue, portfolio_at_risk
 from .engine.matching import allocate, run_matching
 from .importers import sources
-from .models import (Allocation, ApiKey, ExceptionItem, Institution, Loan, Member, Reminder, StaffSession, StaffUser,
-                     Transaction)
+from .models import (Allocation, ApiKey, AuditEvent, ExceptionItem, Institution, Loan, Member, Reminder, StaffSession,
+                     StaffUser, Transaction)
 
 @asynccontextmanager
 async def lifespan(_app):
@@ -52,6 +53,8 @@ class InstitutionIn(BaseModel):
 def create_institution(body: InstitutionIn, s: Session = Depends(get_session)):
     inst = Institution(**body.model_dump())
     s.add(inst)
+    s.flush()
+    audit.record(s, audit.platform(inst.id), "institution.create", "institution", inst.id, after=body.model_dump())
     s.commit()
     return {"id": inst.id, "name": inst.name}
 
@@ -87,7 +90,11 @@ def _user_out(u: StaffUser) -> dict:
             "is_active": u.is_active, "last_login_at": u.last_login_at}
 
 
-def _create_user(s: Session, institution_id: int, body: StaffIn) -> StaffUser:
+def _user_state(u: StaffUser) -> dict:
+    return {"email": u.email, "name": u.name, "role": u.role, "is_active": u.is_active}
+
+
+def _create_user(s: Session, institution_id: int, body: StaffIn, who: Principal) -> StaffUser:
     auth.check_password_policy(body.password)
     email = body.email.strip().lower()
     if s.scalar(select(StaffUser.id).where(StaffUser.email == email)):
@@ -95,6 +102,8 @@ def _create_user(s: Session, institution_id: int, body: StaffIn) -> StaffUser:
     u = StaffUser(institution_id=institution_id, email=email, name=body.name, role=body.role,
                   password_hash=auth.hash_password(body.password), is_active=True)
     s.add(u)
+    s.flush()
+    audit.record(s, who, "user.create", "staff_user", u.id, after=_user_state(u))
     s.commit()
     return u
 
@@ -105,22 +114,31 @@ def create_first_admin(institution_id: int, body: StaffIn, s: Session = Depends(
     _inst(s, institution_id)
     if body.role != "admin":
         raise HTTPException(422, "the first user must be an admin")
-    return _user_out(_create_user(s, institution_id, body))
+    return _user_out(_create_user(s, institution_id, body, audit.platform(institution_id)))
 
 
 @app.post("/auth/login", tags=["auth"])
-def login(body: LoginIn, s: Session = Depends(get_session)):
+def login(body: LoginIn, request: Request, s: Session = Depends(get_session)):
+    ip = request.client.host if request.client else None
     user = auth.authenticate(s, body.email, body.password)
     if not user:
+        known = s.scalar(select(StaffUser).where(StaffUser.email == body.email.strip().lower()))
+        if known:  # unknown emails have no institution to log against
+            audit.record(s, audit.anonymous(known.institution_id), "auth.login_failed", "staff_user", known.id,
+                         ip=ip, note="account deactivated" if not known.is_active else "wrong password")
+            s.commit()
         raise HTTPException(401, "invalid email or password")
     token, expires = auth.issue_session(s, user)
+    audit.record(s, Principal.of(user), "auth.login", "staff_user", user.id, ip=ip)
     s.commit()
     return {"token": token, "token_type": "bearer", "expires_at": expires, "user": _user_out(user)}
 
 
 @app.post("/auth/logout", tags=["auth"])
-def logout(sess: StaffSession = Depends(auth.current_session), s: Session = Depends(get_session)):
+def logout(sess: StaffSession = Depends(auth.current_session), user: StaffUser = Depends(auth.current_user),
+           s: Session = Depends(get_session)):
     sess.revoked_at = auth.utcnow()
+    audit.record(s, Principal.of(user), "auth.logout", "staff_user", user.id)
     s.commit()
     return {"logged_out": True}
 
@@ -138,6 +156,7 @@ def change_password(body: PasswordIn, token: str = Depends(auth.bearer_token),
     auth.check_password_policy(body.new_password)
     user.password_hash = auth.hash_password(body.new_password)
     auth.revoke_sessions(s, user.id, except_token=token)
+    audit.record(s, Principal.of(user), "auth.password_change", "staff_user", user.id)
     s.commit()
     return {"changed": True}
 
@@ -148,9 +167,10 @@ def list_users(institution_id: int, s: Session = Depends(get_session)):
     return [_user_out(u) for u in users]
 
 
-@app.post("/institutions/{institution_id}/users", dependencies=[Depends(require("manage_users"))], tags=["users"])
-def create_user(institution_id: int, body: StaffIn, s: Session = Depends(get_session)):
-    return _user_out(_create_user(s, institution_id, body))
+@app.post("/institutions/{institution_id}/users", tags=["users"])
+def create_user(institution_id: int, body: StaffIn, s: Session = Depends(get_session),
+                admin: Principal = Depends(require("manage_users"))):
+    return _user_out(_create_user(s, institution_id, body, admin))
 
 
 @app.patch("/institutions/{institution_id}/users/{user_id}", tags=["users"])
@@ -161,6 +181,7 @@ def update_user(institution_id: int, user_id: int, body: StaffPatch, s: Session 
         raise HTTPException(404, "user not found")
     if u.id == admin.id and ((body.role and body.role != "admin") or body.is_active is False):
         raise HTTPException(409, "you cannot remove your own admin access; ask another admin")
+    before = _user_state(u)
     if body.name is not None:
         u.name = body.name
     if body.role is not None:
@@ -172,6 +193,11 @@ def update_user(institution_id: int, user_id: int, body: StaffPatch, s: Session 
         u.is_active = body.is_active
     if body.is_active is False or body.password is not None or body.role is not None:
         auth.revoke_sessions(s, u.id)  # changes take effect now, not at token expiry
+    after = _user_state(u)
+    changed = [k for k in after if after[k] != before[k]]
+    audit.record(s, admin, "user.update", "staff_user", u.id,
+                 before={k: before[k] for k in changed},
+                 after={**{k: after[k] for k in changed}, **({"password_reset": True} if body.password else {})})
     s.commit()
     return _user_out(u)
 
@@ -202,19 +228,23 @@ def create_api_key(institution_id: int, body: ApiKeyIn, s: Session = Depends(get
     k = ApiKey(institution_id=institution_id, name=body.name, role=body.role, prefix=raw[:12],
                key_hash=auth.token_hash(raw), created_by_user_id=admin.id, created_at=auth.utcnow())
     s.add(k)
+    s.flush()
+    audit.record(s, admin, "api_key.create", "api_key", k.id, after={"name": k.name, "role": k.role, "prefix": k.prefix})
     s.commit()
     return {**_key_out(k), "key": raw}
 
 
-@app.delete("/institutions/{institution_id}/api-keys/{key_id}", tags=["api keys"],
-            dependencies=[Depends(require("manage_users"))])
-def revoke_api_key(institution_id: int, key_id: int, s: Session = Depends(get_session)):
+@app.delete("/institutions/{institution_id}/api-keys/{key_id}", tags=["api keys"])
+def revoke_api_key(institution_id: int, key_id: int, s: Session = Depends(get_session),
+                   admin: Principal = Depends(require("manage_users"))):
     """Revoke at once. The record is kept so past use stays traceable."""
     k = s.get(ApiKey, key_id)
     if not k or k.institution_id != institution_id:
         raise HTTPException(404, "API key not found")
     if not k.revoked_at:
         k.revoked_at = auth.utcnow()
+        audit.record(s, admin, "api_key.revoke", "api_key", k.id, before={"revoked": False},
+                     after={"revoked": True, "name": k.name, "prefix": k.prefix})
         s.commit()
     return _key_out(k)
 
@@ -227,7 +257,19 @@ IMPORTERS = {
 }
 
 
-@app.post("/institutions/{institution_id}/import/{kind}", dependencies=[Depends(require("reconcile"))])
+def _summary(result: dict) -> dict:
+    """Top-level counts and totals of an engine result, without per-line detail."""
+    return {k: v for k, v in result.items() if isinstance(v, (str, int, float, bool)) or v is None}
+
+
+def _audited(s: Session, who: Principal, action: str, result: dict, note: str | None = None) -> dict:
+    """Engine runs commit their own work; record the run straight after."""
+    audit.record(s, who, action, after=_summary(result), note=note)
+    s.commit()
+    return result
+
+
+@app.post("/institutions/{institution_id}/import/{kind}")
 async def import_file(
     institution_id: int,
     kind: str,
@@ -235,35 +277,41 @@ async def import_file(
     employer: str | None = Query(None, description="check-off imports only"),
     period: str | None = Query(None, pattern=r"^\d{4}-\d{2}$", description="YYYY-MM, check-off imports only"),
     s: Session = Depends(get_session),
+    who: Principal = Depends(require("reconcile")),
 ):
     _inst(s, institution_id)
     content = await file.read()
+    note = f"file {file.filename}"
     if kind in IMPORTERS:
-        return IMPORTERS[kind](s, institution_id, content).as_dict()
+        return _audited(s, who, f"import.{kind}", IMPORTERS[kind](s, institution_id, content).as_dict(), note)
     if kind in {"checkoff_schedule", "checkoff_remittance"}:
         if not employer or not period:
             raise HTTPException(422, "employer and period are required for check-off imports")
         fn = sources.import_checkoff_schedule if kind == "checkoff_schedule" else sources.import_checkoff_remittance
-        return fn(s, institution_id, employer, period, content).as_dict()
+        return _audited(s, who, f"import.{kind}", fn(s, institution_id, employer, period, content).as_dict(),
+                        f"{note}, {employer} {period}")
     raise HTTPException(404, f"unknown import kind '{kind}'")
 
 
-@app.post("/institutions/{institution_id}/checkoff/reconcile", dependencies=[Depends(require("reconcile"))])
-def checkoff(institution_id: int, employer: str, period: str, s: Session = Depends(get_session)):
+@app.post("/institutions/{institution_id}/checkoff/reconcile")
+def checkoff(institution_id: int, employer: str, period: str, s: Session = Depends(get_session),
+             who: Principal = Depends(require("reconcile"))):
     _inst(s, institution_id)
-    return reconcile_checkoff(s, institution_id, employer, period)
+    return _audited(s, who, "checkoff.reconcile", reconcile_checkoff(s, institution_id, employer, period),
+                    f"{employer} {period}")
 
 
-@app.post("/institutions/{institution_id}/match", dependencies=[Depends(require("reconcile"))])
-def match(institution_id: int, s: Session = Depends(get_session)):
+@app.post("/institutions/{institution_id}/match")
+def match(institution_id: int, s: Session = Depends(get_session), who: Principal = Depends(require("reconcile"))):
     _inst(s, institution_id)
-    return run_matching(s, institution_id)
+    return _audited(s, who, "match.run", run_matching(s, institution_id))
 
 
-@app.post("/institutions/{institution_id}/collections/queue", dependencies=[Depends(require("collections"))])
-def collections_queue(institution_id: int, s: Session = Depends(get_session)):
+@app.post("/institutions/{institution_id}/collections/queue")
+def collections_queue(institution_id: int, s: Session = Depends(get_session),
+                      who: Principal = Depends(require("collections"))):
     _inst(s, institution_id)
-    return build_queue(s, institution_id)
+    return _audited(s, who, "collections.queue", build_queue(s, institution_id))
 
 
 @app.get("/institutions/{institution_id}/reminders", dependencies=[Depends(require("read"))])
@@ -318,6 +366,7 @@ def resolve(exception_id: int, body: ResolveIn, s: Session = Depends(get_session
     e = s.get(ExceptionItem, exception_id)
     if not e or e.status != "open" or e.institution_id != user.institution_id:
         raise HTTPException(404, "open exception not found")
+    before = {"status": e.status, "kind": e.kind, "amount_cents": e.amount_cents, "member_id": e.member_id}
     if e.kind == "suspense":
         if not body.member_no:
             raise HTTPException(422, "member_no is required to clear a suspense item")
@@ -325,15 +374,22 @@ def resolve(exception_id: int, body: ResolveIn, s: Session = Depends(get_session
         if not m:
             raise HTTPException(404, "member not found")
         t = s.get(Transaction, e.transaction_id)
+        before |= {"transaction_status": t.status, "transaction_member_id": t.member_id, "reference": t.reference}
         t.match_method, t.match_confidence = "manual", 100
         allocs = allocate(s, t, m.id)
         e.detail += f" | Cleared to {m.member_no}" + (f": {body.note}" if body.note else "")
         e.status = "resolved"
+        audit.record(s, user, "suspense.clear", "exception", e.id, before=before, note=body.note, after={
+            "status": e.status, "transaction_status": t.status, "member_id": m.id, "member_no": m.member_no,
+            "allocations": [{"target": a.target, "loan_id": a.loan_id, "amount_cents": a.amount_cents} for a in allocs],
+        })
         s.commit()
         return {"resolved": True, "allocations": [{"target": a.target, "amount_kes": a.amount_cents / 100} for a in allocs]}
     e.status = "resolved"
     if body.note:
         e.detail += f" | {body.note}"
+    audit.record(s, user, "exception.resolve", "exception", e.id, before=before, after={"status": e.status},
+                 note=body.note)
     s.commit()
     return {"resolved": True}
 
@@ -367,8 +423,8 @@ def dashboard(institution_id: int, s: Session = Depends(get_session)):
     }
 
 
-@app.get("/institutions/{institution_id}/exports/postings.csv", dependencies=[Depends(require("export"))])
-def postings(institution_id: int, s: Session = Depends(get_session)):
+@app.get("/institutions/{institution_id}/exports/postings.csv")
+def postings(institution_id: int, s: Session = Depends(get_session), who: Principal = Depends(require("export"))):
     """Allocations in a flat file the core banking system can import."""
     rows = s.execute(
         select(Allocation, Transaction, Member, Loan)
@@ -385,5 +441,50 @@ def postings(institution_id: int, s: Session = Depends(get_session)):
         w.writerow([t.txn_time.strftime("%Y-%m-%d %H:%M"), t.source, t.reference, m.member_no, m.name,
                     a.target, ln.loan_no if ln else "", f"{a.amount_cents / 100:.2f}"])
     buf.seek(0)
+    # member-level money leaving the system: record who took it
+    audit.record(s, who, "export.postings", after={"rows": len(rows)})
+    s.commit()
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
                              headers={"Content-Disposition": "attachment; filename=sawazi_postings.csv"})
+
+
+# ---------------------------------------------------------------- audit log
+
+@app.get("/institutions/{institution_id}/audit", dependencies=[Depends(require("audit"))], tags=["audit"])
+def audit_log(
+    institution_id: int,
+    action: str | None = Query(None, description="exact action, or a prefix ending in '.', e.g. 'user.'"),
+    entity_type: str | None = None,
+    entity_id: int | None = None,
+    actor_kind: str | None = Query(None, pattern="^(user|api_key|platform|anonymous)$"),
+    actor_id: int | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    before_id: int | None = Query(None, description="page backwards: pass the last id you received"),
+    limit: int = Query(100, ge=1, le=500),
+    s: Session = Depends(get_session),
+):
+    """Newest first. Read-only: there is no endpoint to change or delete an audit event."""
+    q = select(AuditEvent).where(AuditEvent.institution_id == institution_id)
+    if action:
+        q = q.where(AuditEvent.action.startswith(action) if action.endswith(".") else AuditEvent.action == action)
+    if entity_type:
+        q = q.where(AuditEvent.entity_type == entity_type)
+    if entity_id is not None:
+        q = q.where(AuditEvent.entity_id == entity_id)
+    if actor_kind:
+        q = q.where(AuditEvent.actor_kind == actor_kind)
+    if actor_id is not None:
+        q = q.where(AuditEvent.actor_id == actor_id)
+    if since:
+        q = q.where(AuditEvent.at >= since)
+    if until:
+        q = q.where(AuditEvent.at < until)
+    if before_id:
+        q = q.where(AuditEvent.id < before_id)
+    return [
+        {"id": e.id, "at": e.at, "actor_kind": e.actor_kind, "actor_id": e.actor_id, "actor_name": e.actor_name,
+         "action": e.action, "entity_type": e.entity_type, "entity_id": e.entity_id, "before": e.before,
+         "after": e.after, "note": e.note, "ip": e.ip}
+        for e in s.scalars(q.order_by(AuditEvent.id.desc()).limit(limit))
+    ]

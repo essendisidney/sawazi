@@ -14,6 +14,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -221,3 +222,24 @@ class ApiKey(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class AuditEvent(Base):
+    """Who did what, when, with the state before and after. Append-only: the ORM refuses updates
+    and deletes (see sawazi/audit.py). Never holds passwords, password hashes or API keys."""
+
+    __tablename__ = "audit_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    actor_kind: Mapped[str] = mapped_column(String(20))  # user | api_key | platform | anonymous
+    actor_id: Mapped[int | None] = mapped_column(Integer)
+    actor_name: Mapped[str] = mapped_column(String(200))  # snapshot, so renames don't rewrite history
+    action: Mapped[str] = mapped_column(String(60), index=True)  # e.g. suspense.clear, user.update
+    entity_type: Mapped[str | None] = mapped_column(String(40))
+    entity_id: Mapped[int | None] = mapped_column(Integer)
+    before: Mapped[dict | None] = mapped_column(JSON)
+    after: Mapped[dict | None] = mapped_column(JSON)
+    note: Mapped[str | None] = mapped_column(Text)
+    ip: Mapped[str | None] = mapped_column(String(45))

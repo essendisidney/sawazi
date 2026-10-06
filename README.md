@@ -29,7 +29,7 @@ It sits beside any core banking system and works from the CSV/Excel exports ever
 pip install -r requirements.txt
 python scripts/make_sample_data.py      # fictional test data
 python scripts/run_demo.py              # full pipeline -> demo_output.json
-python -m pytest -q                     # 44 tests
+python -m pytest -q                     # 57 tests
 uvicorn sawazi.api:app --reload          # API at http://localhost:8000/docs
 ```
 
@@ -55,6 +55,19 @@ A key belongs to the institution, not the person who made it, so it keeps workin
 `DELETE /institutions/{id}/api-keys/{key_id}`. Keys can never clear suspense, resolve exceptions or manage staff or keys:
 a person must do those.
 
+## Audit log
+
+Every manual action is recorded with who did it (staff user, API key, or the Pesara platform), when, and the
+state before and after: clearing suspense (with the allocations made), resolving exceptions, imports, matching and
+check-off runs, building the collections queue, postings exports, staff and API key changes, logins (with IP),
+failed logins against a known account, logouts and password changes. The event is written in the same database
+transaction as the change, so there is never a change without its record. Passwords, hashes and keys are never logged.
+
+Admins read it with `GET /institutions/{id}/audit` (newest first; filter by `action` or an action prefix like `user.`,
+`entity_type`/`entity_id`, `actor_kind`/`actor_id`, `since`/`until`; page with `before_id`). There is no endpoint to
+change or delete an event, and the app refuses updates and deletes. In production, also deny the app's database role
+UPDATE and DELETE on `audit_events`.
+
 `SAWAZI_API_KEY` is the Pesara platform key (header `X-API-Key`). It is only for creating institutions and
 each institution's first admin, and is never given to an institution. If it is not set those endpoints are closed.
 
@@ -74,6 +87,7 @@ curl -X POST localhost:8000/institutions/1/admin -H "X-API-Key: $SAWAZI_API_KEY"
 | PATCH | `/institutions/{id}/users/{user_id}` | Change role, deactivate, reset password (admin) |
 | GET/POST | `/institutions/{id}/api-keys` | List / create institution API keys (admin; full key shown once) |
 | DELETE | `/institutions/{id}/api-keys/{key_id}` | Revoke an API key (admin) |
+| GET | `/institutions/{id}/audit` | Audit log of every manual action, newest first (admin) |
 | POST | `/institutions/{id}/import/{kind}` | `members`, `loans`, `mpesa`, `bank`, `checkoff_schedule`, `checkoff_remittance` (check-off needs `employer` and `period=YYYY-MM`) |
 | POST | `/institutions/{id}/checkoff/reconcile` | Reconcile one employer and period |
 | POST | `/institutions/{id}/match` | Match and allocate everything pending |
@@ -89,7 +103,8 @@ curl -X POST localhost:8000/institutions/1/admin -H "X-API-Key: $SAWAZI_API_KEY"
 ```
 sawazi/
   models.py            multi-tenant data model (money in integer cents)
-  auth.py              staff login, roles, institution scoping
+  auth.py              staff login, roles, institution scoping, API keys
+  audit.py             append-only audit log of every manual action
   importers/           CSV parsing for every source
   engine/matching.py   member matching, allocation, anomaly flags
   engine/checkoff.py   check-off reconciliation
@@ -103,7 +118,6 @@ tests/                 pytest suite
 
 - Send SMS through Africa's Talking, with delivery status
 - Daraja C2B callbacks for real-time matching (statements stay as the fallback)
-- Audit log of every manual action
 - Staff web console for suspense clearing and the collections queue
 - Allocation rules configurable per institution (penalties, interest, principal order)
 
