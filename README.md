@@ -29,11 +29,34 @@ It sits beside any core banking system and works from the CSV/Excel exports ever
 pip install -r requirements.txt
 python scripts/make_sample_data.py      # fictional test data
 python scripts/run_demo.py              # full pipeline -> demo_output.json
-python -m pytest -q                     # 109 tests
+python -m pytest -q                     # 115 tests
 uvicorn sawazi.api:app --reload          # API at http://localhost:8000/docs
 ```
 
 Uses SQLite locally. For production set `SAWAZI_DB_URL=postgresql+psycopg://...` and `SAWAZI_API_KEY`.
+
+## Staff console
+
+A web console for SACCO staff, served by the API itself at `/console/` (plain HTML, CSS and JavaScript: no build
+step, nothing extra to host). Staff log in with their Sawazi account and see only what their role allows.
+
+| Screen | What staff do there |
+|---|---|
+| Dashboard | Match rate, suspense, PAR, open items, payments by source, real-time M-Pesa awaiting a statement |
+| Suspense | See each unmatched payment with its details and the suggested member; search members; clear to a member after a confirmation that names them |
+| Exceptions | Check-off short/missing/unidentified lines, possible double payments and other flags; resolve with a reason |
+| Collections | Ranked arrears queue with drafted messages; tick reminders and send SMS after confirming; failed sends and recent messages with delivery status |
+| Upload | Upload any statement or export, run matching, reconcile check-off for an employer and month |
+
+Try it on fictional data:
+
+```bash
+python scripts/make_sample_data.py
+python scripts/console_demo.py      # http://localhost:8765/console/ (logins printed; SMS simulated)
+```
+
+The console shows uploaded data only as text, loads scripts only from its own files, and is served with a strict
+Content-Security-Policy. Login tokens are kept for the browser tab only (`sessionStorage`).
 
 ## Staff login and roles
 
@@ -142,6 +165,7 @@ curl -X POST localhost:8000/institutions/1/admin -H "X-API-Key: $SAWAZI_API_KEY"
 | GET/POST | `/institutions/{id}/api-keys` | List / create institution API keys (admin; full key shown once) |
 | DELETE | `/institutions/{id}/api-keys/{key_id}` | Revoke an API key (admin) |
 | GET | `/institutions/{id}/audit` | Audit log of every manual action, newest first (admin) |
+| GET | `/institutions/{id}/members?q=` | Find a member by number, name, phone or ID number, with active loans |
 | GET | `/institutions/{id}/c2b/unconfirmed` | Real-time M-Pesa payments not yet seen on a paybill statement |
 | POST | `/institutions/{id}/reminders/send` | Approve and send reminders to members by SMS (staff only) |
 | GET | `/institutions/{id}/sms` | Messages sent, with delivery status |
@@ -167,6 +191,7 @@ sawazi/
   audit.py             append-only audit log of every manual action
   sms.py               SMS providers: Taifa Mobile client, simulator
   daraja.py            M-Pesa Daraja C2B callback parsing, URL registration
+  console/             staff web console (static HTML/CSS/JS served at /console/)
   importers/           CSV parsing for every source
   engine/matching.py   member matching, allocation, anomaly flags
   engine/checkoff.py   check-off reconciliation
@@ -178,7 +203,6 @@ tests/                 pytest suite
 
 ## Next (Phase 1 remaining)
 
-- Staff web console for suspense clearing and the collections queue
 - Allocation rules configurable per institution (penalties, interest, principal order)
 
 Before any real member data: ODPC registration and a data processing agreement with each pilot institution.

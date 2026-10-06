@@ -14,16 +14,18 @@ import threading
 from collections import defaultdict
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
+from pathlib import Path
 from datetime import datetime, timedelta
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from . import audit, auth, daraja, sms
-from .auth import API_KEY_ROLES, ROLES, Principal, require
+from .auth import API_KEY_ROLES, PERMISSIONS, ROLES, Principal, require
 from .db import get_session, init_db
 from .engine.checkoff import reconcile_checkoff
 from .engine.collections import build_queue, portfolio_at_risk
@@ -164,8 +166,11 @@ def logout(sess: StaffSession = Depends(auth.current_session), user: StaffUser =
 
 
 @app.get("/auth/me", tags=["auth"])
-def me(user: StaffUser = Depends(auth.current_user)):
-    return _user_out(user)
+def me(user: StaffUser = Depends(auth.current_user), s: Session = Depends(get_session)):
+    """Who is logged in, their institution, and what their role allows (the console hides the rest)."""
+    inst = s.get(Institution, user.institution_id)
+    return {**_user_out(user), "institution_name": inst.name if inst else None,
+            "permissions": sorted(a for a, roles in PERMISSIONS.items() if user.role in roles)}
 
 
 @app.post("/auth/password", tags=["auth"])
@@ -337,12 +342,13 @@ def collections_queue(institution_id: int, s: Session = Depends(get_session),
 
 
 @app.get("/institutions/{institution_id}/reminders", dependencies=[Depends(require("read"))])
-def reminders(institution_id: int, limit: int = 50, s: Session = Depends(get_session)):
+def reminders(institution_id: int, limit: int = Query(50, ge=1, le=500),
+              status: str = Query("queued", pattern="^(queued|failed)$"), s: Session = Depends(get_session)):
     rows = s.execute(
         select(Reminder, Loan, Member)
         .join(Loan, Reminder.loan_id == Loan.id)
         .join(Member, Loan.member_id == Member.id)
-        .where(Reminder.institution_id == institution_id, Reminder.status == "queued")
+        .where(Reminder.institution_id == institution_id, Reminder.status == status)
         .order_by(Reminder.priority_score.desc())
         .limit(limit)
     ).all()
@@ -358,6 +364,8 @@ def reminders(institution_id: int, limit: int = 50, s: Session = Depends(get_ses
             "days_in_arrears": ln.days_in_arrears,
             "arrears_kes": ln.arrears_cents / 100,
             "message": r.message,
+            "status": r.status,
+            "sms_allowed": r.channel in SENDABLE_CHANNELS,
         }
         for r, ln, m in rows
     ]
@@ -370,11 +378,45 @@ def exceptions(institution_id: int, status: str = "open", kind: str | None = Non
         q = q.where(ExceptionItem.kind == kind)
     sev = {"high": 0, "medium": 1, "low": 2}
     items = sorted(s.scalars(q), key=lambda e: (sev.get(e.severity, 3), -e.amount_cents))
+    txns = {t.id: t for t in s.scalars(select(Transaction).where(
+        Transaction.institution_id == institution_id,
+        Transaction.id.in_({e.transaction_id for e in items if e.transaction_id})))}
+    members = {m.id: m for m in s.scalars(select(Member).where(
+        Member.institution_id == institution_id, Member.id.in_({e.member_id for e in items if e.member_id})))}
+
+    def txn(t: Transaction | None):
+        return t and {"source": t.source, "reference": t.reference, "txn_time": t.txn_time,
+                      "amount_kes": t.amount_cents / 100, "payer_name": t.payer_name, "payer_phone": t.payer_phone,
+                      "account_ref": t.account_ref, "narrative": t.narrative, "status": t.status}
+
+    def member(m: Member | None):
+        return m and {"member_no": m.member_no, "name": m.name, "phone": m.phone}
+
     return [
         {"id": e.id, "kind": e.kind, "severity": e.severity, "amount_kes": e.amount_cents / 100,
-         "detail": e.detail, "transaction_id": e.transaction_id, "member_id": e.member_id}
+         "detail": e.detail, "transaction_id": e.transaction_id, "member_id": e.member_id,
+         "created_at": e.created_at, "transaction": txn(txns.get(e.transaction_id)),
+         "suggested_member": member(members.get(e.member_id))}
         for e in items
     ]
+
+
+@app.get("/institutions/{institution_id}/members", dependencies=[Depends(require("read"))])
+def search_members(institution_id: int, q: str = Query(..., min_length=2, max_length=60),
+                   limit: int = Query(20, ge=1, le=50), s: Session = Depends(get_session)):
+    """Find a member by number, name, phone or ID number, with their loans (for clearing suspense)."""
+    like = f"%{q.strip()}%"
+    phone = norm_phone(q)
+    found = list(s.scalars(select(Member).where(Member.institution_id == institution_id, or_(
+        Member.member_no.ilike(like), Member.name.ilike(like), Member.id_number == q.strip(),
+        Member.phone == phone if phone else Member.phone.ilike(like))).order_by(Member.member_no).limit(limit)))
+    loans = defaultdict(list)
+    for ln in s.scalars(select(Loan).where(Loan.institution_id == institution_id,
+                                           Loan.member_id.in_([m.id for m in found]), Loan.status == "active")):
+        loans[ln.member_id].append({"loan_no": ln.loan_no, "product": ln.product, "balance_kes": ln.balance_cents / 100,
+                                    "arrears_kes": ln.arrears_cents / 100, "days_in_arrears": ln.days_in_arrears})
+    return [{"member_no": m.member_no, "name": m.name, "phone": m.phone, "employer": m.employer,
+             "loans": loans[m.id]} for m in found]
 
 
 class ResolveIn(BaseModel):
@@ -888,3 +930,32 @@ def c2b_unconfirmed(institution_id: int, older_than_hours: int = Query(48, ge=0)
     ).order_by(MpesaCallback.received_at))
     return [{"trans_id": c.trans_id, "amount_kes": c.amount_cents / 100, "received_at": c.received_at,
              "transaction_id": c.transaction_id, "ip": c.ip} for c in rows]
+
+
+# ---------------------------------------------------------------- staff web console
+# Plain HTML/CSS/JS served by the API: no build step, nothing extra to host. It calls the JSON API
+# above with the staff member's bearer token; the server enforces every permission.
+
+CONSOLE_DIR = Path(__file__).parent / "console"
+CONSOLE_CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; "
+               "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; "
+               "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+
+
+@app.middleware("http")
+async def console_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/console"):
+        response.headers["Content-Security-Policy"] = CONSOLE_CSP
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse("/console/")
+
+
+app.mount("/console", StaticFiles(directory=CONSOLE_DIR, html=True), name="console")

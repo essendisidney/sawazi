@@ -25,7 +25,7 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 2. Audit log DONE (`sawazi/audit.py`)
 3. SMS DONE via Taifa Mobile (`sawazi/sms.py`; no Taifa sandbox, so `simulate` is the default provider). Delivery callbacks, opt-outs, staff-approval-only sending. Left: confirm with Taifa the number format (we send 2547XXXXXXXX) and API key length before the first live send
 4. Daraja C2B DONE (`sawazi/daraja.py`, `scripts/daraja_register.py`). Validation always accepts; statement uploads confirm every callback. Left: test against the Daraja sandbox; if Safaricom sends hashed MSISDNs, consider matching on the hash of member phones
-5. Staff web console: suspense clearing screen, exceptions list, collections queue, upload page, dashboard
+5. Staff web console DONE (`sawazi/console/`, run `scripts/console_demo.py`). Left: admin screens (staff users, API keys, SMS settings, opt-outs, audit log) still API-only
 6. Configurable allocation rules per institution (penalty -> interest -> principal order, deposit/share splits)
 7. Alembic migrations; PostgreSQL in production
 
@@ -47,6 +47,7 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 - `sawazi/engine/checkoff.py` check-off schedule vs remittance reconciliation
 - `sawazi/engine/collections.py` arrears ranking, drafted messages, PAR
 - `sawazi/api.py` FastAPI app
+- `sawazi/console/` staff console, vanilla JS, no build step. Build the DOM with `h()` and text nodes only: never innerHTML (uploaded data can contain HTML); no inline scripts (CSP)
 - `sawazi/audit.py` append-only audit log. Every new manual action calls `audit.record(...)` before its `commit()`, never logs secrets
 - `sawazi/auth.py` staff login (scrypt passwords, hashed opaque session tokens), roles, institution scoping. Every new endpoint needs `Depends(require(...))`; it returns a `Principal` (staff user or API key). Actions that move money to a member or change access go in `HUMAN_ONLY`
 - `scripts/` fictional sample data generator (`make_sample_data.py`, includes an answer key `mpesa_truth.csv`), demo run, dashboard build
