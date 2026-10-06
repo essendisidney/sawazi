@@ -29,7 +29,7 @@ It sits beside any core banking system and works from the CSV/Excel exports ever
 pip install -r requirements.txt
 python scripts/make_sample_data.py      # fictional test data
 python scripts/run_demo.py              # full pipeline -> demo_output.json
-python -m pytest -q                     # 82 tests
+python -m pytest -q                     # 109 tests
 uvicorn sawazi.api:app --reload          # API at http://localhost:8000/docs
 ```
 
@@ -54,6 +54,33 @@ The full key (`swz_...`) is shown once; only its hash is stored. Send it as `Aut
 A key belongs to the institution, not the person who made it, so it keeps working if that person leaves; revoke it with
 `DELETE /institutions/{id}/api-keys/{key_id}`. Keys can never clear suspense, resolve exceptions or manage staff or keys:
 a person must do those.
+
+## Real-time M-Pesa (Daraja C2B)
+
+Payments to the paybill arrive the moment the member pays, and are matched straight away. Statements stay the
+fallback and the source of truth.
+
+- **Sawazi never blocks money.** The validation callback always accepts, and URLs are registered with
+  `ResponseType: Completed`, so a payment goes through even if Sawazi is down.
+- **Same payment, one record.** A callback's `TransID` is the statement's receipt number, so uploading the statement
+  later never double-counts, and repeat callbacks are ignored.
+- **The statement confirms every callback.** Safaricom does not sign callbacks, so on each statement upload Sawazi
+  marks matching callbacks confirmed and fills in the payer's phone where Safaricom masked it. A different amount
+  raises a high-severity `c2b_mismatch` exception. `GET /institutions/{id}/c2b/unconfirmed` lists callbacks not yet
+  on any statement (after 48 hours by default).
+- **Protection:** a secret in the callback URL (`SAWAZI_DARAJA_CALLBACK_TOKEN`; generate it with
+  `python -c "import secrets; print(secrets.token_hex(24))"`), and optionally `SAWAZI_DARAJA_ALLOWED_IPS`
+  (comma-separated; take Safaricom's current list from the Daraja portal). Callbacks are closed if the token is not set.
+- The institution's `paybill` in Sawazi must equal the shortcode, or callbacks are acknowledged but not recorded.
+- Run the API with a single worker: matching is serialised per institution inside one process.
+
+Register the URLs once per paybill (sandbox first; credentials from that institution's Daraja app):
+
+```bash
+SAWAZI_DARAJA_CONSUMER_KEY=... SAWAZI_DARAJA_CONSUMER_SECRET=... SAWAZI_DARAJA_CALLBACK_TOKEN=... \
+  python scripts/daraja_register.py register --shortcode 600000 --host https://your-sawazi-host
+python scripts/daraja_register.py simulate --shortcode 600000 --amount 100 --account UT00104   # sandbox only
+```
 
 ## SMS to members (Taifa Mobile)
 
@@ -115,6 +142,7 @@ curl -X POST localhost:8000/institutions/1/admin -H "X-API-Key: $SAWAZI_API_KEY"
 | GET/POST | `/institutions/{id}/api-keys` | List / create institution API keys (admin; full key shown once) |
 | DELETE | `/institutions/{id}/api-keys/{key_id}` | Revoke an API key (admin) |
 | GET | `/institutions/{id}/audit` | Audit log of every manual action, newest first (admin) |
+| GET | `/institutions/{id}/c2b/unconfirmed` | Real-time M-Pesa payments not yet seen on a paybill statement |
 | POST | `/institutions/{id}/reminders/send` | Approve and send reminders to members by SMS (staff only) |
 | GET | `/institutions/{id}/sms` | Messages sent, with delivery status |
 | GET/POST | `/institutions/{id}/sms/opt-outs` | Numbers that must not get SMS / record a member's opt-out |
@@ -138,6 +166,7 @@ sawazi/
   auth.py              staff login, roles, institution scoping, API keys
   audit.py             append-only audit log of every manual action
   sms.py               SMS providers: Taifa Mobile client, simulator
+  daraja.py            M-Pesa Daraja C2B callback parsing, URL registration
   importers/           CSV parsing for every source
   engine/matching.py   member matching, allocation, anomaly flags
   engine/checkoff.py   check-off reconciliation
@@ -149,7 +178,6 @@ tests/                 pytest suite
 
 ## Next (Phase 1 remaining)
 
-- Daraja C2B callbacks for real-time matching (statements stay as the fallback)
 - Staff web console for suspense clearing and the collections queue
 - Allocation rules configurable per institution (penalties, interest, principal order)
 

@@ -24,7 +24,7 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 1. Staff auth DONE: users, roles, per-institution scoping, per-institution API keys (`sawazi/auth.py`, role matrix in `PERMISSIONS`, human-only actions in `HUMAN_ONLY`)
 2. Audit log DONE (`sawazi/audit.py`)
 3. SMS DONE via Taifa Mobile (`sawazi/sms.py`; no Taifa sandbox, so `simulate` is the default provider). Delivery callbacks, opt-outs, staff-approval-only sending. Left: confirm with Taifa the number format (we send 2547XXXXXXXX) and API key length before the first live send
-4. M-Pesa Daraja C2B validation/confirmation callbacks for real-time matching (statements stay as fallback)
+4. Daraja C2B DONE (`sawazi/daraja.py`, `scripts/daraja_register.py`). Validation always accepts; statement uploads confirm every callback. Left: test against the Daraja sandbox; if Safaricom sends hashed MSISDNs, consider matching on the hash of member phones
 5. Staff web console: suspense clearing screen, exceptions list, collections queue, upload page, dashboard
 6. Configurable allocation rules per institution (penalty -> interest -> principal order, deposit/share splits)
 7. Alembic migrations; PostgreSQL in production

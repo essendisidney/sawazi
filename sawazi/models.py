@@ -294,3 +294,22 @@ class SmsOptOut(Base):
     source: Mapped[str] = mapped_column(String(20))  # member_sms | subscription | sender_blocked | staff
     note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class MpesaCallback(Base):
+    """Every Daraja C2B validation/confirmation exactly as received. A confirmation becomes a Transaction;
+    the paybill statement later confirms it (Safaricom does not sign callbacks, the statement is the truth)."""
+
+    __tablename__ = "mpesa_callbacks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # validation | confirmation
+    trans_id: Mapped[str] = mapped_column(String(40), index=True)
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    payload: Mapped[dict] = mapped_column(JSON)
+    received_at: Mapped[datetime] = mapped_column(DateTime)
+    ip: Mapped[str | None] = mapped_column(String(45))
+    transaction_id: Mapped[int | None] = mapped_column(ForeignKey("transactions.id"))
+    statement_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    statement_mismatch: Mapped[str | None] = mapped_column(Text)

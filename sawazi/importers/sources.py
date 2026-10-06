@@ -9,11 +9,12 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import CheckoffRemittance, CheckoffSchedule, Loan, Member, Transaction
+from ..models import CheckoffRemittance, CheckoffSchedule, ExceptionItem, Loan, Member, MpesaCallback, Transaction
 from .common import (
     norm_phone,
     pick,
@@ -29,14 +30,19 @@ class ImportResult:
     created: int = 0
     skipped_duplicates: int = 0
     rejected: list[str] = field(default_factory=list)
+    callbacks_confirmed: int = 0  # M-Pesa only: real-time payments now seen on the statement
+    callbacks_mismatched: int = 0
 
     def as_dict(self):
-        return {
+        out = {
             "created": self.created,
             "skipped_duplicates": self.skipped_duplicates,
             "rejected": self.rejected[:50],
             "rejected_count": len(self.rejected),
         }
+        if self.callbacks_confirmed or self.callbacks_mismatched:
+            out |= {"callbacks_confirmed": self.callbacks_confirmed, "callbacks_mismatched": self.callbacks_mismatched}
+        return out
 
 
 # ---------------------------------------------------------------- core exports
@@ -139,6 +145,7 @@ def import_mpesa_statement(s: Session, institution_id: int, content) -> ImportRe
     """
     res = ImportResult()
     seen = _existing_refs(s, institution_id, "mpesa")
+    pending_callbacks = _unconfirmed_callbacks(s, institution_id)
     for i, row in enumerate(read_rows(content), start=2):
         receipt = pick(row, "receipt_no", "receipt", "transaction_id", "trans_id")
         paid_in = to_cents(pick(row, "paid_in", "amount", "credit"))
@@ -146,13 +153,6 @@ def import_mpesa_statement(s: Session, institution_id: int, content) -> ImportRe
         if not receipt or paid_in <= 0:
             continue  # outgoing / charge / blank lines
         if status and status not in {"completed", "success", "successful"}:
-            continue
-        if receipt in seen:
-            res.skipped_duplicates += 1
-            continue
-        when = to_datetime(pick(row, "completion_time", "transaction_time", "date", "trans_time"))
-        if when is None:
-            res.rejected.append(f"row {i}: unreadable date for {receipt}")
             continue
         other = pick(row, "other_party_info", "sender", "msisdn_name", "customer")
         phone = norm_phone(pick(row, "msisdn", "phone"))
@@ -162,6 +162,15 @@ def import_mpesa_statement(s: Session, institution_id: int, content) -> ImportRe
             if m:
                 phone = phone or norm_phone(m.group("phone"))
                 name = name or (m.group("name") or "").strip()
+        if receipt in pending_callbacks:
+            _confirm_callbacks(s, institution_id, pending_callbacks.pop(receipt), paid_in, phone, name, res)
+        if receipt in seen:
+            res.skipped_duplicates += 1
+            continue
+        when = to_datetime(pick(row, "completion_time", "transaction_time", "date", "trans_time"))
+        if when is None:
+            res.rejected.append(f"row {i}: unreadable date for {receipt}")
+            continue
         s.add(
             Transaction(
                 institution_id=institution_id,
@@ -179,6 +188,39 @@ def import_mpesa_statement(s: Session, institution_id: int, content) -> ImportRe
         res.created += 1
     s.commit()
     return res
+
+
+def _unconfirmed_callbacks(s: Session, institution_id: int) -> dict[str, list[MpesaCallback]]:
+    out: dict[str, list[MpesaCallback]] = {}
+    for c in s.scalars(select(MpesaCallback).where(
+            MpesaCallback.institution_id == institution_id, MpesaCallback.kind == "confirmation",
+            MpesaCallback.statement_confirmed_at.is_(None))):
+        out.setdefault(c.trans_id, []).append(c)
+    return out
+
+
+def _confirm_callbacks(s: Session, institution_id: int, callbacks: list[MpesaCallback], paid_in: int,
+                       phone: str | None, name: str | None, res: ImportResult) -> None:
+    """The statement is the truth. Matching amounts confirm the callback and fill in payer details Safaricom
+    masked in the callback; a different amount means the callback cannot be trusted."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    t = s.get(Transaction, callbacks[0].transaction_id) if callbacks[0].transaction_id else None
+    for c in callbacks:
+        c.statement_confirmed_at = now
+    if any(c.amount_cents != paid_in for c in callbacks) or (t and t.amount_cents != paid_in):
+        msg = (f"M-Pesa {callbacks[0].trans_id}: real-time callback said KES {callbacks[0].amount_cents / 100:,.2f}, "
+               f"paybill statement says KES {paid_in / 100:,.2f}. Check allocations to this payment.")
+        for c in callbacks:
+            c.statement_mismatch = msg
+        s.add(ExceptionItem(institution_id=institution_id, kind="c2b_mismatch", severity="high",
+                            transaction_id=t.id if t else None, member_id=t.member_id if t else None,
+                            amount_cents=paid_in, detail=msg))
+        res.callbacks_mismatched += 1
+        return
+    if t:
+        t.payer_phone = t.payer_phone or phone
+        t.payer_name = t.payer_name or name or None
+    res.callbacks_confirmed += 1
 
 
 def import_bank_statement(s: Session, institution_id: int, content) -> ImportResult:

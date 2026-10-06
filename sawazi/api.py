@@ -8,9 +8,11 @@ from __future__ import annotations
 import csv
 import hmac
 import io
+import logging
 import os
+import threading
 from collections import defaultdict
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta
 
@@ -20,7 +22,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from . import audit, auth, sms
+from . import audit, auth, daraja, sms
 from .auth import API_KEY_ROLES, ROLES, Principal, require
 from .db import get_session, init_db
 from .engine.checkoff import reconcile_checkoff
@@ -28,8 +30,8 @@ from .engine.collections import build_queue, portfolio_at_risk
 from .engine.matching import allocate, run_matching
 from .importers import sources
 from .importers.common import norm_phone
-from .models import (Allocation, ApiKey, AuditEvent, ExceptionItem, Institution, Loan, Member, Reminder, SmsMessage,
-                     SmsOptOut, SmsSettings, StaffSession, StaffUser, Transaction)
+from .models import (Allocation, ApiKey, AuditEvent, ExceptionItem, Institution, Loan, Member, MpesaCallback,
+                     Reminder, SmsMessage, SmsOptOut, SmsSettings, StaffSession, StaffUser, Transaction)
 
 @asynccontextmanager
 async def lifespan(_app):
@@ -39,6 +41,20 @@ async def lifespan(_app):
 
 app = FastAPI(title="Sawazi by Pesara", version="0.1.0", lifespan=lifespan,
               description="Repayment matching, check-off reconciliation and collections for SACCOs and microfinance institutions.")
+
+_match_locks: dict[int, threading.Lock] = {}
+_match_locks_guard = threading.Lock()
+
+
+@contextmanager
+def matching_lock(institution_id: int):
+    """One matching run per institution at a time, so a C2B callback and a manual run can never
+    allocate the same payment twice. Per process: run a single API worker until matching moves to a queue."""
+    with _match_locks_guard:
+        lock = _match_locks.setdefault(institution_id, threading.Lock())
+    with lock:
+        yield
+
 
 def _inst(s: Session, institution_id: int) -> Institution:
     inst = s.get(Institution, institution_id)
@@ -308,7 +324,9 @@ def checkoff(institution_id: int, employer: str, period: str, s: Session = Depen
 @app.post("/institutions/{institution_id}/match")
 def match(institution_id: int, s: Session = Depends(get_session), who: Principal = Depends(require("reconcile"))):
     _inst(s, institution_id)
-    return _audited(s, who, "match.run", run_matching(s, institution_id))
+    with matching_lock(institution_id):
+        result = run_matching(s, institution_id)
+    return _audited(s, who, "match.run", result)
 
 
 @app.post("/institutions/{institution_id}/collections/queue")
@@ -761,3 +779,112 @@ def taifa_incoming(token: str, body: dict, s: Session = Depends(get_session)):
                             f"member replied: {str(body.get('message'))[:50]}")
         return {"ok": True, "opted_out": n}
     return {"ok": True, "opted_out": 0}  # other replies are not handled yet
+
+
+# ---------------------------------------------------------------- M-Pesa Daraja C2B callbacks
+# Register with scripts/daraja_register.py:
+#   https://<host>/callbacks/c2b/<SAWAZI_DARAJA_CALLBACK_TOKEN>/confirmation  (and /validation)
+# Safaricom does not sign callbacks. Defences: secret URL token, optional IP allowlist
+# (SAWAZI_DARAJA_ALLOWED_IPS), and every callback is confirmed against the next paybill statement.
+
+log = logging.getLogger("sawazi.c2b")
+
+
+def _c2b_guard(token: str, request: Request) -> str | None:
+    expected = os.getenv("SAWAZI_DARAJA_CALLBACK_TOKEN")
+    if not expected or not hmac.compare_digest(token, expected):
+        raise HTTPException(404, "not found")
+    ip = request.client.host if request.client else None
+    allowed = {x.strip() for x in os.getenv("SAWAZI_DARAJA_ALLOWED_IPS", "").split(",") if x.strip()}
+    if allowed and ip not in allowed:
+        log.warning("C2B callback from %s refused (not in SAWAZI_DARAJA_ALLOWED_IPS)", ip)
+        raise HTTPException(404, "not found")
+    return ip
+
+
+def _institution_for_shortcode(s: Session, shortcode: str) -> Institution | None:
+    found = list(s.scalars(select(Institution).where(Institution.paybill == shortcode)))
+    if len(found) != 1:  # unknown or ambiguous: never guess whose money it is
+        log.warning("C2B for paybill %s matched %d institutions; not recorded (the statement will catch it)",
+                    shortcode, len(found))
+        return None
+    return found[0]
+
+
+@app.post("/callbacks/c2b/{token}/validation", tags=["callbacks"], include_in_schema=False)
+def c2b_validation(token: str, body: dict, request: Request, s: Session = Depends(get_session)):
+    """Always accepts. Sawazi never blocks a member's payment."""
+    ip = _c2b_guard(token, request)
+    try:
+        p = daraja.parse(body)
+    except daraja.BadCallback as e:
+        log.warning("C2B validation unreadable: %s", e)
+        return daraja.ACCEPT
+    inst = _institution_for_shortcode(s, p.shortcode)
+    if inst:
+        s.add(MpesaCallback(institution_id=inst.id, kind="validation", trans_id=p.trans_id,
+                            amount_cents=p.amount_cents, payload=body, received_at=auth.utcnow(), ip=ip))
+        s.commit()
+    return daraja.ACCEPT
+
+
+@app.post("/callbacks/c2b/{token}/confirmation", tags=["callbacks"], include_in_schema=False)
+def c2b_confirmation(token: str, body: dict, request: Request, s: Session = Depends(get_session)):
+    """Record the payment (idempotent on TransID, shared with statement imports) and match it now."""
+    ip = _c2b_guard(token, request)
+    try:
+        p = daraja.parse(body)
+    except daraja.BadCallback as e:
+        log.warning("C2B confirmation unreadable: %s", e)
+        return daraja.ACCEPT  # acknowledge anyway; the statement is the fallback
+    inst = _institution_for_shortcode(s, p.shortcode)
+    if not inst:
+        return daraja.ACCEPT
+    t = s.scalar(select(Transaction).where(Transaction.institution_id == inst.id, Transaction.source == "mpesa",
+                                           Transaction.reference == p.trans_id))
+    existing = t is not None
+    if t is None:
+        t = Transaction(institution_id=inst.id, source="mpesa", reference=p.trans_id, txn_time=p.txn_time,
+                        amount_cents=p.amount_cents, payer_name=p.payer_name, payer_phone=p.payer_phone,
+                        account_ref=p.account_ref, narrative=p.transaction_type)
+        s.add(t)
+        s.flush()
+    elif t.amount_cents != p.amount_cents:  # repeat callback that disagrees with what we hold
+        s.add(ExceptionItem(institution_id=inst.id, kind="c2b_mismatch", severity="high", transaction_id=t.id,
+                            amount_cents=p.amount_cents,
+                            detail=f"M-Pesa {p.trans_id}: callback says KES {p.amount_cents / 100:,.2f}, "
+                                   f"we hold KES {t.amount_cents / 100:,.2f}. Check the paybill statement."))
+    confirmed_at = None
+    if existing and t.amount_cents == p.amount_cents:
+        earlier = list(s.scalars(select(MpesaCallback.statement_confirmed_at).where(
+            MpesaCallback.institution_id == inst.id, MpesaCallback.kind == "confirmation",
+            MpesaCallback.trans_id == p.trans_id)))
+        if not earlier:  # the payment came from a statement upload: already confirmed
+            confirmed_at = auth.utcnow()
+        elif all(earlier):
+            confirmed_at = earlier[0]
+    s.add(MpesaCallback(institution_id=inst.id, kind="confirmation", trans_id=p.trans_id, amount_cents=p.amount_cents,
+                        payload=body, received_at=auth.utcnow(), ip=ip, transaction_id=t.id,
+                        statement_confirmed_at=confirmed_at))
+    s.commit()
+    try:
+        with matching_lock(inst.id):
+            run_matching(s, inst.id)
+    except Exception:  # the payment is stored; the next match run picks it up
+        s.rollback()
+        log.exception("C2B real-time matching failed for institution %s", inst.id)
+    return daraja.ACCEPT
+
+
+@app.get("/institutions/{institution_id}/c2b/unconfirmed", dependencies=[Depends(require("read"))], tags=["c2b"])
+def c2b_unconfirmed(institution_id: int, older_than_hours: int = Query(48, ge=0),
+                    s: Session = Depends(get_session)):
+    """Payments that arrived by callback but are not yet on an uploaded paybill statement.
+    After a day or two these deserve a look: a statement should always contain them."""
+    cutoff = auth.utcnow() - timedelta(hours=older_than_hours)
+    rows = s.scalars(select(MpesaCallback).where(
+        MpesaCallback.institution_id == institution_id, MpesaCallback.kind == "confirmation",
+        MpesaCallback.statement_confirmed_at.is_(None), MpesaCallback.received_at <= cutoff,
+    ).order_by(MpesaCallback.received_at))
+    return [{"trans_id": c.trans_id, "amount_kes": c.amount_cents / 100, "received_at": c.received_at,
+             "transaction_id": c.transaction_id, "ip": c.ip} for c in rows]
