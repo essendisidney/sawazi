@@ -40,9 +40,12 @@ PERMISSIONS: dict[str, set[str]] = {
     "export": {"admin", "accountant"},                             # postings file (member-level money)
     "manage_users": {"admin"},                                     # staff and API keys
     "audit": {"admin"},                                            # read the audit log
+    "send_sms": {"admin", "accountant", "credit_officer"},         # approve SMS to members, record opt-outs
+    "sms_settings": {"admin"},                                     # SMS setup, opting a number back in
 }
-# A person must do these, never a machine: they move money to a member or change who has access.
-HUMAN_ONLY = {"resolve", "manage_users"}
+# A person must do these, never a machine: they move money to a member, message members,
+# or change who has access.
+HUMAN_ONLY = {"resolve", "manage_users", "send_sms", "sms_settings"}
 API_KEY_ROLES = ("accountant", "credit_officer", "viewer")
 API_KEY_PREFIX = "swz_"
 _LAST_USED_EVERY = timedelta(minutes=1)  # don't write to the database on every request
@@ -161,7 +164,7 @@ def _api_key(s: Session, token: str) -> ApiKey:
 class Principal:
     """Whoever is calling: a staff user or an institution API key."""
 
-    kind: str  # user | api_key | platform | anonymous
+    kind: str  # user | api_key | platform | anonymous | provider
     id: int | None
     institution_id: int
     role: str

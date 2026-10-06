@@ -233,7 +233,7 @@ class AuditEvent(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
     at: Mapped[datetime] = mapped_column(DateTime, index=True)
-    actor_kind: Mapped[str] = mapped_column(String(20))  # user | api_key | platform | anonymous
+    actor_kind: Mapped[str] = mapped_column(String(20))  # user | api_key | platform | anonymous | provider
     actor_id: Mapped[int | None] = mapped_column(Integer)
     actor_name: Mapped[str] = mapped_column(String(200))  # snapshot, so renames don't rewrite history
     action: Mapped[str] = mapped_column(String(60), index=True)  # e.g. suspense.clear, user.update
@@ -243,3 +243,54 @@ class AuditEvent(Base):
     after: Mapped[dict | None] = mapped_column(JSON)
     note: Mapped[str | None] = mapped_column(Text)
     ip: Mapped[str | None] = mapped_column(String(45))
+
+
+class SmsSettings(Base):
+    """Per-institution SMS setup. Real sends need `enabled`; the simulate provider ignores it."""
+
+    __tablename__ = "sms_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), unique=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    service_name: Mapped[str | None] = mapped_column(String(100))  # Taifa Mobile service / sender ID
+    opt_out_text: Mapped[str | None] = mapped_column(String(160))  # appended to every message, e.g. how to stop
+
+
+class SmsMessage(Base):
+    """One SMS to one member: who approved it, what was sent, and what the network said."""
+
+    __tablename__ = "sms_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    reminder_id: Mapped[int | None] = mapped_column(ForeignKey("reminders.id"), index=True)
+    loan_id: Mapped[int | None] = mapped_column(ForeignKey("loans.id"), index=True)
+    member_id: Mapped[int | None] = mapped_column(ForeignKey("members.id"))
+    phone: Mapped[str] = mapped_column(String(20), index=True)
+    body: Mapped[str] = mapped_column(Text)
+    provider: Mapped[str] = mapped_column(String(20))  # simulate | taifa
+    # pending -> sent | failed | unknown | simulated -> delivered | undelivered
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    provider_status: Mapped[str | None] = mapped_column(String(10))
+    provider_description: Mapped[str | None] = mapped_column(String(300))
+    approved_by_user_id: Mapped[int] = mapped_column(ForeignKey("staff_users.id"))
+    approved_at: Mapped[datetime] = mapped_column(DateTime)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    delivery_status: Mapped[str | None] = mapped_column(String(100))  # raw delivery report status
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class SmsOptOut(Base):
+    """A phone number that must not get SMS from this institution."""
+
+    __tablename__ = "sms_opt_outs"
+    __table_args__ = (UniqueConstraint("institution_id", "phone"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    phone: Mapped[str] = mapped_column(String(20))
+    source: Mapped[str] = mapped_column(String(20))  # member_sms | subscription | sender_blocked | staff
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime)

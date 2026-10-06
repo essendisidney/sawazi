@@ -22,8 +22,8 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 
 ## Phase 1 — what is left, in this order
 1. Staff auth DONE: users, roles, per-institution scoping, per-institution API keys (`sawazi/auth.py`, role matrix in `PERMISSIONS`, human-only actions in `HUMAN_ONLY`)
-2. Audit log DONE (`sawazi/audit.py`). When SMS sending lands (item 3), record each send/approval with `audit.record`
-3. SMS sending via Africa's Talking (sandbox first), delivery status callbacks, opt-out handling, send only on staff approval
+2. Audit log DONE (`sawazi/audit.py`)
+3. SMS DONE via Taifa Mobile (`sawazi/sms.py`; no Taifa sandbox, so `simulate` is the default provider). Delivery callbacks, opt-outs, staff-approval-only sending. Left: confirm with Taifa the number format (we send 2547XXXXXXXX) and API key length before the first live send
 4. M-Pesa Daraja C2B validation/confirmation callbacks for real-time matching (statements stay as fallback)
 5. Staff web console: suspense clearing screen, exceptions list, collections queue, upload page, dashboard
 6. Configurable allocation rules per institution (penalty -> interest -> principal order, deposit/share splits)
@@ -61,4 +61,4 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 ## Quality bar
 - After any matching change, run `scripts/run_demo.py` and check the ACCURACY line: `auto_allocated_wrong` must stay 0.
 - Sample data is fictional. Never commit real member data. Real data needs ODPC registration and a data processing agreement first.
-- Secrets (Daraja, Africa's Talking keys) go in environment variables / `.env` (gitignored), never in code.
+- Secrets (Daraja, Taifa Mobile keys, callback token) go in environment variables / `.env` (gitignored), never in code.

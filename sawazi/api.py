@@ -6,26 +6,30 @@ Docs: http://localhost:8000/docs
 from __future__ import annotations
 
 import csv
+import hmac
 import io
+import os
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import datetime
+from dataclasses import replace
+from datetime import datetime, timedelta
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from . import audit, auth
+from . import audit, auth, sms
 from .auth import API_KEY_ROLES, ROLES, Principal, require
 from .db import get_session, init_db
 from .engine.checkoff import reconcile_checkoff
 from .engine.collections import build_queue, portfolio_at_risk
 from .engine.matching import allocate, run_matching
 from .importers import sources
-from .models import (Allocation, ApiKey, AuditEvent, ExceptionItem, Institution, Loan, Member, Reminder, StaffSession,
-                     StaffUser, Transaction)
+from .importers.common import norm_phone
+from .models import (Allocation, ApiKey, AuditEvent, ExceptionItem, Institution, Loan, Member, Reminder, SmsMessage,
+                     SmsOptOut, SmsSettings, StaffSession, StaffUser, Transaction)
 
 @asynccontextmanager
 async def lifespan(_app):
@@ -456,7 +460,7 @@ def audit_log(
     action: str | None = Query(None, description="exact action, or a prefix ending in '.', e.g. 'user.'"),
     entity_type: str | None = None,
     entity_id: int | None = None,
-    actor_kind: str | None = Query(None, pattern="^(user|api_key|platform|anonymous)$"),
+    actor_kind: str | None = Query(None, pattern="^(user|api_key|platform|anonymous|provider)$"),
     actor_id: int | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
@@ -488,3 +492,272 @@ def audit_log(
          "after": e.after, "note": e.note, "ip": e.ip}
         for e in s.scalars(q.order_by(AuditEvent.id.desc()).limit(limit))
     ]
+
+
+# ---------------------------------------------------------------- SMS to members (Taifa Mobile)
+
+SENDABLE_CHANNELS = {"sms", "call", "guarantor_notice", "field_visit"}  # "recovery" text is an internal note
+MIN_DAYS_BETWEEN_SMS = 3  # per loan: protects members from repeat messages when the queue is rebuilt
+MAX_SEND_BATCH = 100
+DELIVERED_OR_PENDING = ("pending", "sent", "unknown", "simulated", "delivered")
+
+
+class SendIn(BaseModel):
+    reminder_ids: list[int] = Field(min_length=1, max_length=MAX_SEND_BATCH)
+
+
+def _sms_settings(s: Session, institution_id: int) -> SmsSettings:
+    st = s.scalar(select(SmsSettings).where(SmsSettings.institution_id == institution_id))
+    return st or SmsSettings(institution_id=institution_id, enabled=False)
+
+
+def _opted_out(s: Session, institution_id: int, phone: str) -> bool:
+    return s.scalar(select(SmsOptOut.id).where(SmsOptOut.institution_id == institution_id,
+                                               SmsOptOut.phone == phone)) is not None
+
+
+def _sms_out(m: SmsMessage) -> dict:
+    return {"id": m.id, "reminder_id": m.reminder_id, "loan_id": m.loan_id, "member_id": m.member_id,
+            "phone": m.phone, "body": m.body, "provider": m.provider, "status": m.status,
+            "provider_message_id": m.provider_message_id, "provider_status": m.provider_status,
+            "provider_description": m.provider_description, "approved_by_user_id": m.approved_by_user_id,
+            "approved_at": m.approved_at, "sent_at": m.sent_at, "delivery_status": m.delivery_status,
+            "delivered_at": m.delivered_at}
+
+
+@app.post("/institutions/{institution_id}/reminders/send", tags=["sms"])
+def send_reminders(institution_id: int, body: SendIn, s: Session = Depends(get_session),
+                   who: Principal = Depends(require("send_sms")), provider=Depends(sms.get_provider)):
+    """Staff approval: send these queued reminders to members by SMS, now. Each one is checked first
+    (opt-out, valid phone, not messaged recently) and the result for every reminder is returned."""
+    _inst(s, institution_id)
+    settings = _sms_settings(s, institution_id)
+    if provider.name != "simulate" and not settings.enabled:
+        raise HTTPException(409, "SMS is not switched on for this institution yet (admin: SMS settings)")
+    results = []
+    for rid in dict.fromkeys(body.reminder_ids):  # de-duplicate, keep order
+        results.append({"reminder_id": rid, **_send_one(s, institution_id, rid, who, provider, settings)})
+    counts = defaultdict(int)
+    for r in results:
+        counts[r["result"]] += 1
+    return {"results": results, "counts": dict(counts), "provider": provider.name}
+
+
+def _send_one(s: Session, institution_id: int, rid: int, who: Principal, provider, settings: SmsSettings) -> dict:
+    r = s.get(Reminder, rid)
+    if not r or r.institution_id != institution_id:
+        return {"result": "skipped", "reason": "reminder not found"}
+    if r.status not in ("queued", "failed"):
+        return {"result": "skipped", "reason": f"already {r.status}"}
+    if r.channel not in SENDABLE_CHANNELS:
+        return {"result": "skipped", "reason": "this is an internal recovery note, not a message for the member"}
+    loan = s.get(Loan, r.loan_id)
+    member = s.get(Member, loan.member_id)
+    phone = norm_phone(member.phone)
+    if not phone:
+        return {"result": "skipped", "reason": "member has no valid phone number"}
+    if _opted_out(s, institution_id, phone):
+        return {"result": "skipped", "reason": "member has opted out of SMS"}
+    since = auth.utcnow() - timedelta(days=MIN_DAYS_BETWEEN_SMS)
+    recent = s.scalar(select(SmsMessage.approved_at).where(
+        SmsMessage.institution_id == institution_id, SmsMessage.loan_id == loan.id,
+        SmsMessage.status.in_(DELIVERED_OR_PENDING), SmsMessage.approved_at >= since))
+    if recent:
+        return {"result": "skipped", "reason": f"an SMS for this loan already went out on {recent:%Y-%m-%d %H:%M}"}
+
+    # Claim the reminder atomically, so a double click or two staff at once can't send it twice.
+    claimed = s.execute(update(Reminder).where(Reminder.id == rid, Reminder.status.in_(("queued", "failed")))
+                        .values(status="sending")).rowcount
+    if claimed != 1:
+        s.rollback()
+        return {"result": "skipped", "reason": "already being sent"}
+    text = r.message + (f" {settings.opt_out_text}" if settings.opt_out_text else "")
+    msg = SmsMessage(institution_id=institution_id, reminder_id=rid, loan_id=loan.id, member_id=member.id,
+                     phone=phone, body=text, provider=provider.name, status="pending",
+                     approved_by_user_id=who.id, approved_at=auth.utcnow())
+    s.add(msg)
+    s.flush()
+    audit.record(s, who, "sms.approve", "sms_message", msg.id, before={"reminder_status": "queued"},
+                 after={"reminder_id": rid, "loan_no": loan.loan_no, "member_no": member.member_no,
+                        "phone": phone, "provider": provider.name})
+    s.commit()  # the approval is on record before anything leaves the building
+
+    try:
+        res = provider.send(phone, text, settings.service_name)
+    except Exception as e:  # never retry blind: it may have gone out
+        res = sms.SendResult("unknown", description=f"Error while sending ({type(e).__name__}); check before resending")
+    msg.status, msg.provider_message_id = res.status, res.provider_message_id
+    msg.provider_status, msg.provider_description = res.provider_status, res.description
+    msg.sent_at = auth.utcnow() if res.status != "failed" else None
+    s.execute(update(Reminder).where(Reminder.id == rid)
+              .values(status="failed" if res.status == "failed" else "sent"))
+    s.commit()
+    return {"result": res.status, "sms_id": msg.id, "phone": phone, "detail": res.description}
+
+
+@app.get("/institutions/{institution_id}/sms", dependencies=[Depends(require("read"))], tags=["sms"])
+def list_sms(institution_id: int, status: str | None = None, limit: int = Query(100, ge=1, le=500),
+             s: Session = Depends(get_session)):
+    q = select(SmsMessage).where(SmsMessage.institution_id == institution_id)
+    if status:
+        q = q.where(SmsMessage.status == status)
+    return [_sms_out(m) for m in s.scalars(q.order_by(SmsMessage.id.desc()).limit(limit))]
+
+
+class OptOutIn(BaseModel):
+    phone: str
+    note: str | None = None
+
+
+def _add_opt_out(s: Session, institution_id: int, phone: str, source: str, note: str | None) -> SmsOptOut | None:
+    """Idempotent. Returns the new opt-out, or None if the number was already opted out."""
+    if _opted_out(s, institution_id, phone):
+        return None
+    o = SmsOptOut(institution_id=institution_id, phone=phone, source=source, note=note, created_at=auth.utcnow())
+    s.add(o)
+    s.flush()
+    return o
+
+
+@app.get("/institutions/{institution_id}/sms/opt-outs", dependencies=[Depends(require("read"))], tags=["sms"])
+def list_opt_outs(institution_id: int, s: Session = Depends(get_session)):
+    rows = s.scalars(select(SmsOptOut).where(SmsOptOut.institution_id == institution_id).order_by(SmsOptOut.id))
+    return [{"phone": o.phone, "source": o.source, "note": o.note, "created_at": o.created_at} for o in rows]
+
+
+@app.post("/institutions/{institution_id}/sms/opt-outs", tags=["sms"])
+def add_opt_out(institution_id: int, body: OptOutIn, s: Session = Depends(get_session),
+                who: Principal = Depends(require("send_sms"))):
+    """Record a member's request to stop SMS (e.g. they called in)."""
+    phone = norm_phone(body.phone)
+    if not phone:
+        raise HTTPException(422, "not a valid Kenyan phone number")
+    o = _add_opt_out(s, institution_id, phone, "staff", body.note)
+    if o:
+        audit.record(s, who, "sms.opt_out", "sms_opt_out", o.id, after={"phone": phone, "source": "staff"},
+                     note=body.note)
+        s.commit()
+    return {"phone": phone, "opted_out": True, "already": o is None}
+
+
+@app.delete("/institutions/{institution_id}/sms/opt-outs/{phone}", tags=["sms"])
+def remove_opt_out(institution_id: int, phone: str,
+                   note: str = Query(..., min_length=3, description="why, e.g. 'member asked in branch'"),
+                   s: Session = Depends(get_session), who: Principal = Depends(require("sms_settings"))):
+    """Opt a number back in. Only on the member's own request; the reason is recorded."""
+    o = s.scalar(select(SmsOptOut).where(SmsOptOut.institution_id == institution_id,
+                                         SmsOptOut.phone == norm_phone(phone)))
+    if not o:
+        raise HTTPException(404, "this number is not opted out")
+    audit.record(s, who, "sms.opt_in", "sms_opt_out", o.id, before={"phone": o.phone, "source": o.source},
+                 after={"phone": o.phone, "opted_out": False}, note=note)
+    s.delete(o)
+    s.commit()
+    return {"phone": o.phone, "opted_out": False}
+
+
+class SmsSettingsIn(BaseModel):
+    enabled: bool
+    service_name: str | None = Field(default=None, max_length=100)
+    opt_out_text: str | None = Field(default=None, max_length=160)
+
+
+def _settings_out(st: SmsSettings) -> dict:
+    return {"enabled": bool(st.enabled), "service_name": st.service_name, "opt_out_text": st.opt_out_text}
+
+
+@app.get("/institutions/{institution_id}/sms/settings", dependencies=[Depends(require("sms_settings"))], tags=["sms"])
+def get_sms_settings(institution_id: int, s: Session = Depends(get_session)):
+    return _settings_out(_sms_settings(s, institution_id))
+
+
+@app.put("/institutions/{institution_id}/sms/settings", tags=["sms"])
+def put_sms_settings(institution_id: int, body: SmsSettingsIn, s: Session = Depends(get_session),
+                     who: Principal = Depends(require("sms_settings"))):
+    st = _sms_settings(s, institution_id)
+    before = _settings_out(st) if st.id else None
+    st.enabled, st.service_name, st.opt_out_text = body.enabled, body.service_name, body.opt_out_text
+    s.add(st)
+    s.flush()
+    audit.record(s, who, "sms.settings", "sms_settings", st.id, before=before, after=_settings_out(st))
+    s.commit()
+    return _settings_out(st)
+
+
+# ---------------------------------------------------------------- Taifa Mobile callbacks
+# Taifa does not sign callbacks, so the URL carries a secret (SAWAZI_SMS_CALLBACK_TOKEN).
+# Register https://<host>/callbacks/taifa/<token>/{delivery,subscription,incoming} with Taifa Mobile,
+# and allow only Taifa's IP addresses at the reverse proxy if they publish them.
+
+def _callback_token(token: str) -> None:
+    expected = os.getenv("SAWAZI_SMS_CALLBACK_TOKEN")
+    if not expected or not hmac.compare_digest(token, expected):
+        raise HTTPException(404, "not found")
+
+
+CALLBACK = Principal("provider", None, 0, "", "Taifa Mobile callback")
+
+
+def _institutions_for(s: Session, service: dict | None, phone: str) -> list[int]:
+    """Which institutions a member's STOP applies to: the one owning the service, otherwise every
+    institution that has messaged this number (when in doubt, respect the opt-out more widely)."""
+    name = (service or {}).get("service_name") if isinstance(service, dict) else None
+    if name:
+        ids = list(s.scalars(select(SmsSettings.institution_id).where(SmsSettings.service_name == name)))
+        if ids:
+            return ids
+    return list(s.scalars(select(SmsMessage.institution_id).where(SmsMessage.phone == phone).distinct()))
+
+
+def _member_opt_out(s: Session, service: dict | None, phone: str | None, source: str, note: str) -> int:
+    phone = norm_phone(phone)
+    if not phone:
+        return 0
+    n = 0
+    for iid in _institutions_for(s, service, phone):
+        o = _add_opt_out(s, iid, phone, source, note)
+        if o:
+            audit.record(s, replace(CALLBACK, institution_id=iid), "sms.opt_out", "sms_opt_out", o.id,
+                         after={"phone": phone, "source": source}, note=note)
+            n += 1
+    s.commit()
+    return n
+
+
+@app.post("/callbacks/taifa/{token}/delivery", tags=["callbacks"], include_in_schema=False)
+def taifa_delivery(token: str, body: dict, s: Session = Depends(get_session)):
+    _callback_token(token)
+    msg = s.scalar(select(SmsMessage).where(SmsMessage.provider == "taifa",
+                                            SmsMessage.provider_message_id == str(body.get("messageId"))))
+    if not msg:
+        return {"ok": True, "matched": False}  # 200 so Taifa does not keep retrying
+    status = str(body.get("status", ""))
+    msg.delivery_status = status[:100]
+    if status in sms.DELIVERED:
+        msg.status, msg.delivered_at = "delivered", auth.utcnow()
+    else:
+        msg.status = "undelivered"
+    s.commit()
+    if status == sms.SENDER_BLOCKED:
+        _member_opt_out(s, None, msg.phone, "sender_blocked", "member blocked our sender ID")
+    return {"ok": True, "matched": True}
+
+
+@app.post("/callbacks/taifa/{token}/subscription", tags=["callbacks"], include_in_schema=False)
+def taifa_subscription(token: str, body: dict, s: Session = Depends(get_session)):
+    _callback_token(token)
+    if str(body.get("update_description", "")).upper() == "DEACTIVATION":
+        n = _member_opt_out(s, body.get("service"), body.get("phone_number"), "subscription",
+                            "member unsubscribed from the service")
+        return {"ok": True, "opted_out": n}
+    return {"ok": True, "opted_out": 0}
+
+
+@app.post("/callbacks/taifa/{token}/incoming", tags=["callbacks"], include_in_schema=False)
+def taifa_incoming(token: str, body: dict, s: Session = Depends(get_session)):
+    _callback_token(token)
+    if sms.is_stop(body.get("message")):
+        n = _member_opt_out(s, body.get("service"), body.get("phone_number"), "member_sms",
+                            f"member replied: {str(body.get('message'))[:50]}")
+        return {"ok": True, "opted_out": n}
+    return {"ok": True, "opted_out": 0}  # other replies are not handled yet

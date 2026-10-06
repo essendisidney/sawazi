@@ -29,7 +29,7 @@ It sits beside any core banking system and works from the CSV/Excel exports ever
 pip install -r requirements.txt
 python scripts/make_sample_data.py      # fictional test data
 python scripts/run_demo.py              # full pipeline -> demo_output.json
-python -m pytest -q                     # 57 tests
+python -m pytest -q                     # 82 tests
 uvicorn sawazi.api:app --reload          # API at http://localhost:8000/docs
 ```
 
@@ -54,6 +54,33 @@ The full key (`swz_...`) is shown once; only its hash is stored. Send it as `Aut
 A key belongs to the institution, not the person who made it, so it keeps working if that person leaves; revoke it with
 `DELETE /institutions/{id}/api-keys/{key_id}`. Keys can never clear suspense, resolve exceptions or manage staff or keys:
 a person must do those.
+
+## SMS to members (Taifa Mobile)
+
+Nothing goes to a member unless a staff member (credit officer, accountant or admin) approves it:
+`POST /institutions/{id}/reminders/send` with the reminder ids from `GET /institutions/{id}/reminders`.
+API keys can never send. Before each message Sawazi checks that the number has not opted out, that the member has
+a valid phone, that the reminder is a member message (recovery notes never go out), and that the same loan has not
+had an SMS in the last 3 days. Each reminder is claimed before sending, so a double click cannot send twice.
+If Taifa Mobile does not answer in time the message is marked `unknown` and is never resent automatically.
+
+Providers, set with `SAWAZI_SMS_PROVIDER`:
+- `simulate` (default): sends nothing and marks messages `simulated`. Taifa Mobile has no sandbox, so use this to try the flow.
+- `taifa`: real sends. Needs `SAWAZI_TAIFA_API_KEY`, and the institution's admin must switch SMS on with
+  `PUT /institutions/{id}/sms/settings` (`enabled`, Taifa `service_name`, optional `opt_out_text` added to every message).
+
+Delivery reports and opt-outs come back from Taifa Mobile on callback URLs that carry a secret
+(`SAWAZI_SMS_CALLBACK_TOKEN`; the callbacks are closed if it is not set). Register these with Taifa Mobile:
+
+```
+https://<your-host>/callbacks/taifa/<token>/delivery
+https://<your-host>/callbacks/taifa/<token>/subscription
+https://<your-host>/callbacks/taifa/<token>/incoming
+```
+
+A member is opted out when they reply STOP, ACHA, SITISHA or UNSUBSCRIBE, unsubscribe from the service, or block the
+sender ID; staff can also record an opt-out when a member asks in person. Only an admin can opt a number back in,
+with a reason. Every approval, opt-out, opt-in and settings change is in the audit log.
 
 ## Audit log
 
@@ -88,6 +115,11 @@ curl -X POST localhost:8000/institutions/1/admin -H "X-API-Key: $SAWAZI_API_KEY"
 | GET/POST | `/institutions/{id}/api-keys` | List / create institution API keys (admin; full key shown once) |
 | DELETE | `/institutions/{id}/api-keys/{key_id}` | Revoke an API key (admin) |
 | GET | `/institutions/{id}/audit` | Audit log of every manual action, newest first (admin) |
+| POST | `/institutions/{id}/reminders/send` | Approve and send reminders to members by SMS (staff only) |
+| GET | `/institutions/{id}/sms` | Messages sent, with delivery status |
+| GET/POST | `/institutions/{id}/sms/opt-outs` | Numbers that must not get SMS / record a member's opt-out |
+| DELETE | `/institutions/{id}/sms/opt-outs/{phone}?note=` | Opt a number back in (admin, reason required) |
+| GET/PUT | `/institutions/{id}/sms/settings` | Switch SMS on, Taifa service name, opt-out text (admin) |
 | POST | `/institutions/{id}/import/{kind}` | `members`, `loans`, `mpesa`, `bank`, `checkoff_schedule`, `checkoff_remittance` (check-off needs `employer` and `period=YYYY-MM`) |
 | POST | `/institutions/{id}/checkoff/reconcile` | Reconcile one employer and period |
 | POST | `/institutions/{id}/match` | Match and allocate everything pending |
@@ -105,6 +137,7 @@ sawazi/
   models.py            multi-tenant data model (money in integer cents)
   auth.py              staff login, roles, institution scoping, API keys
   audit.py             append-only audit log of every manual action
+  sms.py               SMS providers: Taifa Mobile client, simulator
   importers/           CSV parsing for every source
   engine/matching.py   member matching, allocation, anomaly flags
   engine/checkoff.py   check-off reconciliation
@@ -116,7 +149,6 @@ tests/                 pytest suite
 
 ## Next (Phase 1 remaining)
 
-- Send SMS through Africa's Talking, with delivery status
 - Daraja C2B callbacks for real-time matching (statements stay as the fallback)
 - Staff web console for suspense clearing and the collections queue
 - Allocation rules configurable per institution (penalties, interest, principal order)
