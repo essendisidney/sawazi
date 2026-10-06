@@ -3,25 +3,24 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from sawazi.db import Base, get_session
+from sawazi.db import get_session
 from sawazi.engine.checkoff import reconcile_checkoff
 from sawazi.engine.collections import build_queue, priority, stage_for
 from sawazi.engine.matching import MemberIndex, find_member, run_matching
 from sawazi.importers import sources
 from sawazi.importers.common import norm_phone, to_cents
 from sawazi.models import Allocation, ExceptionItem, Institution, Loan, Member, Transaction
+from tests.conftest import make_engine
 
 DATA = Path(__file__).resolve().parent.parent / "sample_data"
 
 
 @pytest.fixture()
 def s():
-    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    Base.metadata.create_all(eng)
+    eng = make_engine()
     session = sessionmaker(bind=eng, expire_on_commit=False)()
     session.add(Institution(id=1, name="Test SACCO", paybill="111222"))
     session.add_all([
@@ -157,9 +156,9 @@ def test_collections_stages_and_priority(s):
 
 # ---------------------------------------------------------------- end to end
 
-def test_api_end_to_end_on_sample_data():
-    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    Base.metadata.create_all(eng)
+def test_api_end_to_end_on_sample_data(monkeypatch):
+    monkeypatch.setenv("SAWAZI_API_KEY", "platform-test-key")
+    eng = make_engine()
     Session = sessionmaker(bind=eng, expire_on_commit=False)
 
     def override():
@@ -172,7 +171,17 @@ def test_api_end_to_end_on_sample_data():
     from sawazi.api import app
     app.dependency_overrides[get_session] = override
     c = TestClient(app)
-    iid = c.post("/institutions", json={"name": "Ufanisi Teachers SACCO", "paybill": "522900"}).json()["id"]
+    pk = {"X-API-Key": "platform-test-key"}
+    iid = c.post("/institutions", json={"name": "Ufanisi Teachers SACCO", "paybill": "522900"}, headers=pk).json()["id"]
+    r = c.post(f"/institutions/{iid}/admin", headers=pk,
+               json={"email": "admin@ufanisi.test", "name": "Admin", "role": "admin", "password": "admin-pass-123"})
+    assert r.status_code == 200, r.text
+    tok = c.post("/auth/login", json={"email": "admin@ufanisi.test", "password": "admin-pass-123"}).json()["token"]
+    admin = {"Authorization": f"Bearer {tok}"}
+    c.post(f"/institutions/{iid}/users", headers=admin,
+           json={"email": "acc@ufanisi.test", "name": "Accountant", "role": "accountant", "password": "acc-pass-1234"})
+    tok = c.post("/auth/login", json={"email": "acc@ufanisi.test", "password": "acc-pass-1234"}).json()["token"]
+    c.headers.update({"Authorization": f"Bearer {tok}"})
     for kind, f in [("members", "members.csv"), ("loans", "loans.csv"), ("mpesa", "mpesa_statement.csv"),
                     ("bank", "bank_statement.csv")]:
         r = c.post(f"/institutions/{iid}/import/{kind}", files={"file": (f, (DATA / f).read_bytes())})

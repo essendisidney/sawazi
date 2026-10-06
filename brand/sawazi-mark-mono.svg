@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-labelledby="t">
+  <title id="t">Sawazi</title>
+  <!-- One-colour version (stamps, receipts, fax, embroidery). Uses currentColor. -->
+  <path d="M72 22H42a14 14 0 0 0 0 28h7" fill="none" stroke="currentColor" stroke-width="13"/>
+  <circle cx="72" cy="22" r="6.5" fill="currentColor"/>
+  <path d="M51 50h7a14 14 0 0 1 0 28H28" fill="none" stroke="currentColor" stroke-width="13"/>
+  <circle cx="28" cy="78" r="6.5" fill="currentColor"/>
+</svg>
