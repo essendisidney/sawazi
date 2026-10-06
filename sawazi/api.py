@@ -31,11 +31,11 @@ from .auth import API_KEY_ROLES, PERMISSIONS, ROLES, Principal, require
 from .db import get_session, init_db
 from .engine.checkoff import reconcile_checkoff
 from .engine.collections import build_queue, portfolio_at_risk
-from .engine import allocation
+from .engine import allocation, appraisal
 from .engine.matching import allocate, run_matching
 from .importers import sources
 from .importers.common import norm_phone
-from .models import (Allocation, AllocationRules, ApiKey, AuditEvent, ExceptionItem, Institution, Loan, Member, MpesaCallback,
+from .models import (Allocation, AllocationRules, ApiKey, LoanProduct, AuditEvent, ExceptionItem, Institution, Loan, Member, MpesaCallback,
                      Reminder, SmsMessage, SmsOptOut, SmsSettings, StaffSession, StaffUser, Transaction)
 
 @asynccontextmanager
@@ -1056,6 +1056,148 @@ def preview_allocation(institution_id: int, body: PreviewIn, s: Session = Depend
         "loans_before": [loan_view(allocation.LoanState.of(ln)) for ln in loans],
         "loans_after": [loan_view(x) for x in states],
     }
+
+
+# ---------------------------------------------------------------- loan products and appraisal
+
+def _cents(kes: Decimal) -> int:
+    return int(kes * 100)
+
+
+class ProductIn(BaseModel):
+    code: str = Field(min_length=1, max_length=20, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=100)
+    active: bool = True
+    min_amount_kes: Decimal = Field(default=Decimal(1000), gt=0, max_digits=14, decimal_places=2)
+    max_amount_kes: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    max_term_months: int = Field(ge=1, le=240)
+    interest_rate_pct: Decimal = Field(ge=0, le=100, max_digits=5, decimal_places=2,
+                                       description="yearly; only used to estimate the instalment")
+    interest_method: str = Field(default="reducing", pattern="^(reducing|flat)$")
+    deposits_multiplier: Decimal = Field(default=Decimal(3), ge=0, le=20, max_digits=4, decimal_places=2,
+                                         description="0 switches the check off")
+    min_membership_months: int = Field(default=6, ge=0, le=120)
+    max_arrears_days: int = Field(default=30, ge=0, le=365)
+    one_third_rule: bool = True
+    guarantor_cover: str = Field(default="above_deposits", pattern="^(above_deposits|full|none)$")
+    min_guarantors: int = Field(default=0, ge=0, le=10)
+    second_approval_above_kes: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
+
+    def apply(self, prod: LoanProduct) -> None:
+        if self.min_amount_kes > self.max_amount_kes:
+            raise HTTPException(422, "minimum amount is more than the maximum")
+        prod.code, prod.name, prod.active = self.code.upper(), self.name, self.active
+        prod.min_amount_cents, prod.max_amount_cents = _cents(self.min_amount_kes), _cents(self.max_amount_kes)
+        prod.max_term_months, prod.interest_method = self.max_term_months, self.interest_method
+        prod.interest_rate_bps = int(self.interest_rate_pct * 100)
+        prod.deposits_multiplier_pct = int(self.deposits_multiplier * 100)
+        prod.min_membership_months, prod.max_arrears_days = self.min_membership_months, self.max_arrears_days
+        prod.one_third_rule, prod.guarantor_cover = self.one_third_rule, self.guarantor_cover
+        prod.min_guarantors = self.min_guarantors
+        prod.second_approval_above_cents = (_cents(self.second_approval_above_kes)
+                                            if self.second_approval_above_kes is not None else None)
+
+
+def _product_out(p: LoanProduct) -> dict:
+    return {"id": p.id, "code": p.code, "name": p.name, "active": p.active,
+            "min_amount_kes": p.min_amount_cents / 100, "max_amount_kes": p.max_amount_cents / 100,
+            "max_term_months": p.max_term_months, "interest_rate_pct": p.interest_rate_bps / 100,
+            "interest_method": p.interest_method, "deposits_multiplier": p.deposits_multiplier_pct / 100,
+            "min_membership_months": p.min_membership_months, "max_arrears_days": p.max_arrears_days,
+            "one_third_rule": p.one_third_rule, "guarantor_cover": p.guarantor_cover,
+            "min_guarantors": p.min_guarantors,
+            "second_approval_above_kes": (p.second_approval_above_cents / 100
+                                          if p.second_approval_above_cents is not None else None)}
+
+
+def _product_rules(p: LoanProduct) -> appraisal.Product:
+    return appraisal.Product(p.min_amount_cents, p.max_amount_cents, p.max_term_months, p.interest_rate_bps,
+                             p.interest_method, p.deposits_multiplier_pct, p.min_membership_months,
+                             p.max_arrears_days, p.one_third_rule, p.guarantor_cover, p.min_guarantors)
+
+
+def _get_product(s: Session, institution_id: int, product_id: int) -> LoanProduct:
+    p = s.get(LoanProduct, product_id)
+    if not p or p.institution_id != institution_id:
+        raise HTTPException(404, "loan product not found")
+    return p
+
+
+@app.get("/institutions/{institution_id}/loan-products", dependencies=[Depends(require("read"))], tags=["loans"])
+def list_products(institution_id: int, s: Session = Depends(get_session)):
+    rows = s.scalars(select(LoanProduct).where(LoanProduct.institution_id == institution_id).order_by(LoanProduct.code))
+    return [_product_out(p) for p in rows]
+
+
+@app.post("/institutions/{institution_id}/loan-products", tags=["loans"])
+def create_product(institution_id: int, body: ProductIn, s: Session = Depends(get_session),
+                   who: Principal = Depends(require("loan_products"))):
+    _inst(s, institution_id)
+    if s.scalar(select(LoanProduct.id).where(LoanProduct.institution_id == institution_id,
+                                             LoanProduct.code == body.code.upper())):
+        raise HTTPException(409, f"product code {body.code.upper()} already exists")
+    now = auth.utcnow()
+    p = LoanProduct(institution_id=institution_id, created_at=now, updated_at=now)
+    body.apply(p)
+    s.add(p)
+    s.flush()
+    audit.record(s, who, "loan_product.create", "loan_product", p.id, after=_product_out(p))
+    s.commit()
+    return _product_out(p)
+
+
+@app.put("/institutions/{institution_id}/loan-products/{product_id}", tags=["loans"])
+def update_product(institution_id: int, product_id: int, body: ProductIn, s: Session = Depends(get_session),
+                   who: Principal = Depends(require("loan_products"))):
+    """Changes apply to appraisals from now on; applications keep the appraisal they were given."""
+    p = _get_product(s, institution_id, product_id)
+    clash = s.scalar(select(LoanProduct.id).where(LoanProduct.institution_id == institution_id,
+                                                  LoanProduct.code == body.code.upper(), LoanProduct.id != p.id))
+    if clash:
+        raise HTTPException(409, f"product code {body.code.upper()} already exists")
+    before = _product_out(p)
+    body.apply(p)
+    p.updated_at = auth.utcnow()
+    after = _product_out(p)
+    audit.record(s, who, "loan_product.update", "loan_product", p.id,
+                 before={k: v for k, v in before.items() if after[k] != v},
+                 after={k: v for k, v in after.items() if before[k] != v})
+    s.commit()
+    return after
+
+
+def _member_facts(s: Session, institution_id: int, member_no: str):
+    m = s.scalar(select(Member).where(Member.institution_id == institution_id, Member.member_no == member_no))
+    if not m:
+        raise HTTPException(404, "member not found")
+    loans = [appraisal.ExistingLoan(ln.loan_no, ln.balance_cents, ln.days_in_arrears)
+             for ln in s.scalars(select(Loan).where(Loan.institution_id == institution_id, Loan.member_id == m.id,
+                                                    Loan.status == "active"))]
+    return m, appraisal.MemberFacts(m.joined_on, m.deposits_cents, m.gross_pay_cents, m.net_pay_cents), loans
+
+
+def _appraisal_out(a: appraisal.Appraisal) -> dict:
+    return {"outcome": a.outcome, "instalment_kes": a.instalment_cents / 100,
+            "max_eligible_kes": a.max_eligible_cents / 100 if a.max_eligible_cents is not None else None,
+            "required_cover_kes": a.required_cover_cents / 100, "accepted_cover_kes": a.accepted_cover_cents / 100,
+            "checks": [{"code": c.code, "status": c.status, "message": c.message} for c in a.checks]}
+
+
+class WhatIfIn(BaseModel):
+    member_no: str
+    product_id: int
+    amount_kes: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    term_months: int = Field(ge=1, le=240)
+
+
+@app.post("/institutions/{institution_id}/appraisal/what-if", dependencies=[Depends(require("read"))], tags=["loans"])
+def appraisal_what_if(institution_id: int, body: WhatIfIn, s: Session = Depends(get_session)):
+    """Appraise a possible loan for a member without saving anything (no guarantors yet)."""
+    p = _get_product(s, institution_id, body.product_id)
+    m, facts, loans = _member_facts(s, institution_id, body.member_no)
+    a = appraisal.appraise(_cents(body.amount_kes), body.term_months, _product_rules(p), facts, loans, [],
+                           auth.utcnow().date())
+    return {"member_no": m.member_no, "member": m.name, "product": p.code, **_appraisal_out(a)}
 
 
 # ---------------------------------------------------------------- staff web console

@@ -343,3 +343,31 @@ class AllocationRules(Base):
     excess: Mapped[list] = mapped_column(JSON)  # [{"target", "percent", "max_cents"}], last takes the rest
     updated_at: Mapped[datetime] = mapped_column(DateTime)
     updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("staff_users.id"))
+
+
+class LoanProduct(Base):
+    """A loan product and the appraisal rules that go with it. Sawazi only appraises; the core system lends."""
+
+    __tablename__ = "loan_products"
+    __table_args__ = (UniqueConstraint("institution_id", "code"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    code: Mapped[str] = mapped_column(String(20))  # as in the core system, e.g. DEV, EMG
+    name: Mapped[str] = mapped_column(String(100))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    min_amount_cents: Mapped[int] = mapped_column(BigInteger)
+    max_amount_cents: Mapped[int] = mapped_column(BigInteger)
+    max_term_months: Mapped[int] = mapped_column(Integer)
+    # Only to estimate the instalment for affordability. The real schedule is the core system's.
+    interest_rate_bps: Mapped[int] = mapped_column(Integer)  # yearly, basis points: 1200 = 12% a year
+    interest_method: Mapped[str] = mapped_column(String(10))  # reducing | flat
+    deposits_multiplier_pct: Mapped[int] = mapped_column(Integer)  # 300 = 3x deposits; 0 = not checked
+    min_membership_months: Mapped[int] = mapped_column(Integer)
+    max_arrears_days: Mapped[int] = mapped_column(Integer)  # existing loans further behind block the application
+    one_third_rule: Mapped[bool] = mapped_column(Boolean)
+    guarantor_cover: Mapped[str] = mapped_column(String(20))  # above_deposits | full | none
+    min_guarantors: Mapped[int] = mapped_column(Integer)
+    second_approval_above_cents: Mapped[int | None] = mapped_column(BigInteger)  # two approvers above this
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime)
