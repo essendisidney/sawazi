@@ -533,7 +533,8 @@ const IMPORTS = [
   ["bank", "Bank statement", "Date, narrative, reference and credit columns."],
   ["checkoff_remittance", "Check-off remittance", "What the employer actually paid. Needs employer and month."],
   ["checkoff_schedule", "Check-off schedule", "What was due from the employer. Needs employer and month."],
-  ["members", "Members", "Export from the core banking system."],
+  ["members", "Members", "Export from the core banking system. Date joined, deposits, share capital and pay columns are read if present."],
+  ["member_balances", "Member balances or payroll", "Deposits and share capital (monthly), or gross and net pay from payroll, for existing members."],
   ["loans", "Loans", "Export from the core banking system."],
 ];
 
@@ -570,7 +571,8 @@ function uploadPanel() {
       fd.append("file", file.files[0]);
       const params = kind.value.startsWith("checkoff") ? { employer: employer.value.trim(), period: period.value } : {};
       const r = await api(`${inst()}/import/${kind.value}`, { method: "POST", form: fd, params });
-      const parts = [`${r.created} new`, `${r.skipped_duplicates} already in Sawazi`];
+      const parts = r.updated !== undefined ? [`${r.updated} members updated`]
+        : [`${r.created} new`, `${r.skipped_duplicates} already in Sawazi`];
       if (r.rejected_count) parts.push(`${plural(r.rejected_count, "row")} need a look (listed below)`);
       if (r.callbacks_confirmed) parts.push(`${r.callbacks_confirmed} real-time payments confirmed`);
       if (r.callbacks_mismatched) parts.push(`${r.callbacks_mismatched} real-time payments DISAGREE with the statement (see Exceptions)`);

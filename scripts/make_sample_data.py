@@ -51,8 +51,28 @@ for i in range(1, 321):
     })
 # a husband and wife sharing one phone (common in real data)
 members[41]["phone"] = members[40]["phone"]
-w("members.csv", ["Member No", "Name", "Phone", "ID Number", "Employer"],
-  [[m["member_no"], m["name"], m["phone"], m["id_number"], m["employer"]] for m in members])
+
+# Balances and pay as the core system / payroll would report them. A separate generator, so every
+# other sample file stays exactly as before. Some members deliberately fail appraisal rules:
+# recent joiners, thin deposits, and take-home pay already under one third of gross.
+fig = random.Random(54)
+for m in members:
+    recent = fig.random() < 0.06
+    joined = datetime(2026, 8, 31) - timedelta(days=fig.randint(20, 170) if recent else fig.randint(200, 4000))
+    m["joined"] = joined.strftime("%d/%m/%Y")
+    m["deposits"] = round(fig.choice([fig.uniform(2_000, 30_000), fig.uniform(30_000, 250_000),
+                                      fig.uniform(250_000, 900_000)]), -1)
+    m["shares"] = fig.choice([2_000, 5_000, 10_000, 10_000, 20_000])
+    if m["employer"]:
+        gross = round(fig.uniform(38_000, 190_000), -2)
+        m["gross"], m["net"] = gross, round(gross * fig.choice([0.22, 0.31, 0.38, 0.45, 0.52, 0.6]), -2)
+    else:
+        m["gross"] = m["net"] = None
+money = lambda v: "" if v is None else f"{v:,.2f}"  # noqa: E731
+w("members.csv", ["Member No", "Name", "Phone", "ID Number", "Employer", "Date Joined", "Deposits",
+                  "Share Capital", "Gross Pay", "Net Pay", "Balances As At"],
+  [[m["member_no"], m["name"], m["phone"], m["id_number"], m["employer"], m["joined"], money(m["deposits"]),
+    money(m["shares"]), money(m["gross"]), money(m["net"]), "31/08/2026"] for m in members])
 
 # ---- loans
 loans = []

@@ -289,6 +289,7 @@ IMPORTERS = {
     "loans": sources.import_loans,
     "mpesa": sources.import_mpesa_statement,
     "bank": sources.import_bank_statement,
+    "member_balances": sources.import_member_balances,
 }
 
 

@@ -6,6 +6,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import DBAPIError
 
@@ -82,4 +83,5 @@ def test_migrate_twice_is_harmless(empty_engine):
     migrate(empty_engine)
     migrate(empty_engine)
     with empty_engine.connect() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0002"
+        head = ScriptDirectory.from_config(Config(str(ALEMBIC_INI))).get_current_head()
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == head

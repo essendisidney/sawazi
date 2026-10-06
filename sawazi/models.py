@@ -48,6 +48,14 @@ class Member(Base):
     phone: Mapped[str | None] = mapped_column(String(20), index=True)
     id_number: Mapped[str | None] = mapped_column(String(20), index=True)
     employer: Mapped[str | None] = mapped_column(String(200))
+    # From the core system / payroll. None means "not supplied": never treat unknown as zero.
+    joined_on: Mapped[date | None] = mapped_column(Date)
+    deposits_cents: Mapped[int | None] = mapped_column(BigInteger)
+    shares_cents: Mapped[int | None] = mapped_column(BigInteger)
+    balances_as_of: Mapped[date | None] = mapped_column(Date)
+    gross_pay_cents: Mapped[int | None] = mapped_column(BigInteger)  # monthly, from payslip / payroll
+    net_pay_cents: Mapped[int | None] = mapped_column(BigInteger)  # monthly take-home after all deductions
+    pay_as_of: Mapped[date | None] = mapped_column(Date)
 
     loans: Mapped[list[Loan]] = relationship(back_populates="member")
 
