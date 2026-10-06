@@ -3,25 +3,24 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from sawazi.db import Base, get_session
+from sawazi.db import get_session
 from sawazi.engine.checkoff import reconcile_checkoff
 from sawazi.engine.collections import build_queue, priority, stage_for
 from sawazi.engine.matching import MemberIndex, find_member, run_matching
 from sawazi.importers import sources
 from sawazi.importers.common import norm_phone, to_cents
 from sawazi.models import Allocation, ExceptionItem, Institution, Loan, Member, Transaction
+from tests.conftest import make_engine
 
 DATA = Path(__file__).resolve().parent.parent / "sample_data"
 
 
 @pytest.fixture()
 def s():
-    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    Base.metadata.create_all(eng)
+    eng = make_engine()
     session = sessionmaker(bind=eng, expire_on_commit=False)()
     session.add(Institution(id=1, name="Test SACCO", paybill="111222"))
     session.add_all([
@@ -159,8 +158,7 @@ def test_collections_stages_and_priority(s):
 
 def test_api_end_to_end_on_sample_data(monkeypatch):
     monkeypatch.setenv("SAWAZI_API_KEY", "platform-test-key")
-    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    Base.metadata.create_all(eng)
+    eng = make_engine()
     Session = sessionmaker(bind=eng, expire_on_commit=False)
 
     def override():

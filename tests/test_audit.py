@@ -28,6 +28,7 @@ def suspense(env):
                    balance_cents=5_000_000, installment_cents=500_000, arrears_cents=300_000, days_in_arrears=20))
         s.add(Transaction(id=10, institution_id=1, source="mpesa", reference="QX1", txn_time=datetime(2026, 9, 5),
                           amount_cents=300_000, status="suspense", account_ref="UT0O104"))
+        s.flush()  # parents before children: PostgreSQL checks foreign keys
         s.add(ExceptionItem(id=10, institution_id=1, kind="suspense", transaction_id=10, amount_cents=300_000,
                             detail="account ref not found; suggested UT00104"))
         s.commit()

@@ -2,13 +2,13 @@ from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from sawazi import auth
-from sawazi.db import Base, get_session
+from sawazi.db import get_session
 from sawazi.models import ApiKey, ExceptionItem, Institution, StaffSession, StaffUser
+from tests.conftest import make_engine
 
 PK = {"X-API-Key": "platform-test-key"}
 PW = "correct-horse-1"
@@ -18,8 +18,7 @@ PW = "correct-horse-1"
 def env(monkeypatch):
     """Two institutions, each with one user per role, and an open exception each."""
     monkeypatch.setenv("SAWAZI_API_KEY", "platform-test-key")
-    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    Base.metadata.create_all(eng)
+    eng = make_engine()
     Session = sessionmaker(bind=eng, expire_on_commit=False)
 
     s = Session()

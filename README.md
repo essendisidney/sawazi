@@ -29,11 +29,39 @@ It sits beside any core banking system and works from the CSV/Excel exports ever
 pip install -r requirements.txt
 python scripts/make_sample_data.py      # fictional test data
 python scripts/run_demo.py              # full pipeline -> demo_output.json
-python -m pytest -q                     # 141 tests
+python -m pytest -q                     # 149 tests
 uvicorn sawazi.api:app --reload          # API at http://localhost:8000/docs
 ```
 
 Uses SQLite locally. For production set `SAWAZI_DB_URL=postgresql+psycopg://...` and `SAWAZI_API_KEY`.
+
+## Database and deploying
+
+The schema is managed by Alembic (`migrations/`). The API applies pending migrations when it starts, and refuses
+to start on a database created before migrations existed (delete local fictional databases and start again).
+
+Production (least cost: one small VPS plus a small managed PostgreSQL 16, or PostgreSQL on the same VPS):
+
+```bash
+export SAWAZI_DB_URL=postgresql+psycopg://sawazi:<password>@<host>:5432/sawazi
+python -m pip install -r requirements.txt
+alembic upgrade head                                  # on every deploy, before starting the API
+uvicorn sawazi.api:app --host 127.0.0.1 --port 8000 --workers 2 --proxy-headers   # behind nginx/Caddy for HTTPS
+```
+
+- Money is stored in 64-bit integer cents, so amounts are never capped.
+- The audit log is append-only in the database itself: PostgreSQL refuses UPDATE, DELETE and TRUNCATE on `audit_events`.
+- Several API workers are safe: matching, real-time M-Pesa and clearing suspense take a per-institution lock
+  (a PostgreSQL advisory lock), and loan rows are locked while their balances change.
+- After changing `sawazi/models.py`: `alembic revision --autogenerate -m "what changed"`, review the file, commit it.
+  A test fails if the models and migrations ever disagree.
+
+Run the test suite on PostgreSQL as well as SQLite (the database is wiped for every test, so use a throwaway one):
+
+```bash
+docker run -d --name sawazi-pg-test -e POSTGRES_USER=sawazi -e POSTGRES_PASSWORD=test -e POSTGRES_DB=sawazi_test -p 127.0.0.1:55432:5432 postgres:16-alpine
+SAWAZI_TEST_DB_URL=postgresql+psycopg://sawazi:test@127.0.0.1:55432/sawazi_test python -m pytest -q
+```
 
 ## Staff console
 
@@ -75,8 +103,6 @@ Try rules before saving with `POST /institutions/{id}/allocation-rules/preview` 
 to new allocations only, and are in the audit log. Postings use the targets `loan_penalty`, `loan_interest`,
 `loan_principal`, `loan_arrears`, `loan_installment`, `shares` and `deposits`.
 
-Local databases created before this change need recreating (all sample data is fictional): delete `sawazi.db` /
-`console_demo.db`. Proper migrations come with Alembic (Phase 1 item 7).
 
 ## Staff login and roles
 
@@ -115,7 +141,7 @@ fallback and the source of truth.
   `python -c "import secrets; print(secrets.token_hex(24))"`), and optionally `SAWAZI_DARAJA_ALLOWED_IPS`
   (comma-separated; take Safaricom's current list from the Daraja portal). Callbacks are closed if the token is not set.
 - The institution's `paybill` in Sawazi must equal the shortcode, or callbacks are acknowledged but not recorded.
-- Run the API with a single worker: matching is serialised per institution inside one process.
+- Matching is serialised per institution across all API workers, so a payment is never allocated twice.
 
 Register the URLs once per paybill (sandbox first; credentials from that institution's Daraja app):
 
@@ -224,7 +250,8 @@ scripts/               sample data generator and demo run
 tests/                 pytest suite
 ```
 
-## Next (Phase 1 remaining)
+## Next
 
+Phase 1 is complete. Phase 2: loan factory (digital applications, appraisal) and the digital guarantor network.
 
 Before any real member data: ODPC registration and a data processing agreement with each pilot institution.

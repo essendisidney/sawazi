@@ -27,11 +27,11 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 4. Daraja C2B DONE (`sawazi/daraja.py`, `scripts/daraja_register.py`). Validation always accepts; statement uploads confirm every callback. Left: test against the Daraja sandbox; if Safaricom sends hashed MSISDNs, consider matching on the hash of member phones
 5. Staff web console DONE (`sawazi/console/`, run `scripts/console_demo.py`). Left: admin screens (staff users, API keys, SMS settings, opt-outs, audit log) still API-only
 6. Allocation rules DONE (`sawazi/engine/allocation.py`). Penalty/interest arrears come from the core export, never computed by Sawazi. Defaults must keep reproducing the original split. Left: share-capital rules that need the member's share balance (e.g. 'until minimum shares reached') wait until the core export carries it
-7. Alembic migrations; PostgreSQL in production
+7. Alembic + PostgreSQL DONE (`migrations/`, `alembic upgrade head` on deploy; API also migrates on start). Suite passes on PostgreSQL 16 (`SAWAZI_TEST_DB_URL`)
 
 ## Stack and conventions
 - FastAPI + SQLAlchemy 2.0 (typed `Mapped[]` models) + pydantic v2. SQLite locally, PostgreSQL in production via `SAWAZI_DB_URL`.
-- Money is ALWAYS integer cents (`*_cents`). Never floats for stored money.
+- Money is ALWAYS integer cents (`*_cents`, `BigInteger` columns). Never floats for stored money.
 - Every table has `institution_id` (multi-tenant). Every query must filter by it. Never leak data across institutions.
 - Imports must be idempotent: re-uploading a file never double-counts (unique on institution + source + reference).
 - Matching never guesses: below confidence 85 a payment goes to suspense with a reason and a suggested member.
@@ -52,15 +52,20 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 - `sawazi/audit.py` append-only audit log. Every new manual action calls `audit.record(...)` before its `commit()`, never logs secrets
 - `sawazi/auth.py` staff login (scrypt passwords, hashed opaque session tokens), roles, institution scoping. Every new endpoint needs `Depends(require(...))`; it returns a `Principal` (staff user or API key). Actions that move money to a member or change access go in `HUMAN_ONLY`
 - `scripts/` fictional sample data generator (`make_sample_data.py`, includes an answer key `mpesa_truth.csv`), demo run, dashboard build
-- `tests/` pytest
+- `migrations/` Alembic. Every model change needs a reviewed `alembic revision --autogenerate` migration
+  (`tests/test_migrations.py` fails if models and migrations disagree)
+- `tests/` pytest (`conftest.make_engine()`: SQLite by default, PostgreSQL with `SAWAZI_TEST_DB_URL`)
 
 ## Commands
 - Install: `python -m pip install -r requirements.txt`
-- Tests: `python -m pytest -q` (must stay green; add tests with every feature)
+- Tests: `python -m pytest -q` (must stay green; add tests with every feature). Before merging, also run with
+  `SAWAZI_TEST_DB_URL=postgresql+psycopg://...` against a throwaway PostgreSQL: it checks foreign keys, column
+  lengths and concurrency that SQLite does not
 - Demo: `python scripts/make_sample_data.py && python scripts/run_demo.py && python scripts/build_dashboard.py`
 - API: `uvicorn sawazi.api:app --reload` then http://localhost:8000/docs
 
 ## Quality bar
+- Anything that allocates money (matching, C2B, clearing suspense) runs inside `matching_lock(s, institution_id)`.
 - After any matching change, run `scripts/run_demo.py` and check the ACCURACY line: `auto_allocated_wrong` must stay 0.
 - Sample data is fictional. Never commit real member data. Real data needs ODPC registration and a data processing agreement first.
 - Secrets (Daraja, Taifa Mobile keys, callback token) go in environment variables / `.env` (gitignored), never in code.

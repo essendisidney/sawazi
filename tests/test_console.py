@@ -57,6 +57,9 @@ def seed_people(Session):
             Transaction(id=10, institution_id=1, source="mpesa", reference="QX1", txn_time=datetime(2026, 9, 5, 10),
                         amount_cents=300_000, status="suspense", account_ref="UT0O104", payer_name="ACHIENG O",
                         payer_phone="254711000001"),
+        ])
+        s.flush()  # parents before children: PostgreSQL checks foreign keys
+        s.add_all([
             ExceptionItem(id=10, institution_id=1, kind="suspense", transaction_id=10, member_id=10,
                           amount_cents=300_000, detail="typo in account; suggested UT00104"),
             Reminder(id=10, institution_id=1, loan_id=10, channel="sms", priority_score=60, message="Dear Achieng"),

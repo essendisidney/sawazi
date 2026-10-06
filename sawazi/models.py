@@ -2,13 +2,15 @@
 
 Every table carries institution_id, so one deployment serves many SACCOs and
 microfinance institutions (multi-tenant). Money is stored as integer cents to
-keep reconciliation exact.
+keep reconciliation exact, in 64-bit columns (BigInteger): a 32-bit integer
+would cap amounts at about KES 21.5 million on PostgreSQL.
 """
 from __future__ import annotations
 
 from datetime import date, datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -59,13 +61,13 @@ class Loan(Base):
     member_id: Mapped[int] = mapped_column(ForeignKey("members.id"), index=True)
     loan_no: Mapped[str] = mapped_column(String(40))
     product: Mapped[str] = mapped_column(String(80), default="Normal loan")
-    principal_cents: Mapped[int] = mapped_column(Integer)
-    balance_cents: Mapped[int] = mapped_column(Integer)
-    installment_cents: Mapped[int] = mapped_column(Integer)
-    arrears_cents: Mapped[int] = mapped_column(Integer, default=0)
+    principal_cents: Mapped[int] = mapped_column(BigInteger)
+    balance_cents: Mapped[int] = mapped_column(BigInteger)
+    installment_cents: Mapped[int] = mapped_column(BigInteger)
+    arrears_cents: Mapped[int] = mapped_column(BigInteger, default=0)
     # Parts of arrears_cents, as reported by the core system (Sawazi never computes them). The rest is principal.
-    penalty_arrears_cents: Mapped[int] = mapped_column(Integer, default=0)
-    interest_arrears_cents: Mapped[int] = mapped_column(Integer, default=0)
+    penalty_arrears_cents: Mapped[int] = mapped_column(BigInteger, default=0)
+    interest_arrears_cents: Mapped[int] = mapped_column(BigInteger, default=0)
     arrears_breakdown: Mapped[bool] = mapped_column(Boolean, default=False)  # the export gave the parts
     days_in_arrears: Mapped[int] = mapped_column(Integer, default=0)
     disbursed_on: Mapped[date | None] = mapped_column(Date)
@@ -88,7 +90,7 @@ class Transaction(Base):
     source: Mapped[str] = mapped_column(String(20))  # mpesa | bank | checkoff
     reference: Mapped[str] = mapped_column(String(80))
     txn_time: Mapped[datetime] = mapped_column(DateTime)
-    amount_cents: Mapped[int] = mapped_column(Integer)
+    amount_cents: Mapped[int] = mapped_column(BigInteger)
     payer_name: Mapped[str | None] = mapped_column(String(200))
     payer_phone: Mapped[str | None] = mapped_column(String(20))
     account_ref: Mapped[str | None] = mapped_column(String(80))
@@ -114,7 +116,7 @@ class Allocation(Base):
     # loan_penalty | loan_interest | loan_principal | loan_arrears (no breakdown) | loan_installment | deposits | shares
     target: Mapped[str] = mapped_column(String(20))
     loan_id: Mapped[int | None] = mapped_column(ForeignKey("loans.id"))
-    amount_cents: Mapped[int] = mapped_column(Integer)
+    amount_cents: Mapped[int] = mapped_column(BigInteger)
 
     transaction: Mapped[Transaction] = relationship(back_populates="allocations")
 
@@ -130,7 +132,7 @@ class CheckoffSchedule(Base):
     employer: Mapped[str] = mapped_column(String(200))
     period: Mapped[str] = mapped_column(String(7))  # YYYY-MM
     member_id: Mapped[int] = mapped_column(ForeignKey("members.id"))
-    expected_cents: Mapped[int] = mapped_column(Integer)
+    expected_cents: Mapped[int] = mapped_column(BigInteger)
 
 
 class CheckoffRemittance(Base):
@@ -145,7 +147,7 @@ class CheckoffRemittance(Base):
     member_no: Mapped[str | None] = mapped_column(String(40))
     payroll_name: Mapped[str | None] = mapped_column(String(200))
     member_id: Mapped[int | None] = mapped_column(ForeignKey("members.id"))
-    remitted_cents: Mapped[int] = mapped_column(Integer)
+    remitted_cents: Mapped[int] = mapped_column(BigInteger)
     received_on: Mapped[date | None] = mapped_column(Date)
 
 
@@ -160,7 +162,7 @@ class ExceptionItem(Base):
     severity: Mapped[str] = mapped_column(String(10), default="medium")  # low | medium | high
     transaction_id: Mapped[int | None] = mapped_column(ForeignKey("transactions.id"))
     member_id: Mapped[int | None] = mapped_column(ForeignKey("members.id"))
-    amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    amount_cents: Mapped[int] = mapped_column(BigInteger, default=0)
     detail: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="open", index=True)  # open | resolved
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -311,7 +313,7 @@ class MpesaCallback(Base):
     institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
     kind: Mapped[str] = mapped_column(String(20))  # validation | confirmation
     trans_id: Mapped[str] = mapped_column(String(40), index=True)
-    amount_cents: Mapped[int] = mapped_column(Integer)
+    amount_cents: Mapped[int] = mapped_column(BigInteger)
     payload: Mapped[dict] = mapped_column(JSON)
     received_at: Mapped[datetime] = mapped_column(DateTime)
     ip: Mapped[str | None] = mapped_column(String(45))

@@ -134,6 +134,7 @@ def world(env, monkeypatch):
             s.add(Member(id=mid, institution_id=iid, member_no=f"M{mid}", name=f"Member {mid}", phone=phone))
             s.add(Loan(id=mid, institution_id=iid, member_id=mid, loan_no=f"LN{mid}", principal_cents=1_000_000,
                        balance_cents=500_000, installment_cents=50_000, arrears_cents=50_000, days_in_arrears=5))
+            s.flush()  # parents before children: PostgreSQL checks foreign keys
             s.add(Reminder(id=mid, institution_id=iid, loan_id=mid, channel=channel, priority_score=50,
                            message=f"Dear Member{mid}, KES 500 on loan LN{mid} is due. Pay via Paybill 522900."))
         s.commit()
@@ -231,8 +232,10 @@ def test_failed_send_can_be_retried(world):
     broke = FakeProvider(result=sms.SendResult("failed", None, "97", "Taifa Mobile account has no enough funds"))
     app.dependency_overrides[sms.get_provider] = lambda: broke
     h = login(c, "accountant@a.test")
-    assert send(c, h, 11)[11] == {"reminder_id": 11, "result": "failed", "sms_id": 1, "phone": "254711000011",
-                                  "detail": "Taifa Mobile account has no enough funds"}
+    res = send(c, h, 11)[11]
+    assert res.pop("sms_id")
+    assert res == {"reminder_id": 11, "result": "failed", "phone": "254711000011",
+                   "detail": "Taifa Mobile account has no enough funds"}
     with Session() as s:
         assert s.get(Reminder, 11).status == "failed"
     ok = FakeProvider()

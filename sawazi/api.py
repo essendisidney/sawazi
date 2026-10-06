@@ -22,7 +22,8 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Uploa
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import audit, auth, daraja, sms
@@ -50,13 +51,20 @@ _match_locks: dict[int, threading.Lock] = {}
 _match_locks_guard = threading.Lock()
 
 
+MATCHING_LOCK_BASE = 7_340_000_000  # PostgreSQL advisory lock keys: base + institution id
+
+
 @contextmanager
-def matching_lock(institution_id: int):
-    """One matching run per institution at a time, so a C2B callback and a manual run can never
-    allocate the same payment twice. Per process: run a single API worker until matching moves to a queue."""
+def matching_lock(s: Session, institution_id: int):
+    """One allocating action per institution at a time (matching runs, C2B callbacks, clearing suspense),
+    so a payment is never allocated twice and loan balances are never updated on stale figures.
+    A thread lock covers this process; on PostgreSQL a transaction advisory lock covers every API worker.
+    The advisory lock is released when the caller's transaction commits or rolls back."""
     with _match_locks_guard:
         lock = _match_locks.setdefault(institution_id, threading.Lock())
     with lock:
+        if s.get_bind().dialect.name == "postgresql":
+            s.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": MATCHING_LOCK_BASE + institution_id})
         yield
 
 
@@ -331,7 +339,7 @@ def checkoff(institution_id: int, employer: str, period: str, s: Session = Depen
 @app.post("/institutions/{institution_id}/match")
 def match(institution_id: int, s: Session = Depends(get_session), who: Principal = Depends(require("reconcile"))):
     _inst(s, institution_id)
-    with matching_lock(institution_id):
+    with matching_lock(s, institution_id):
         result = run_matching(s, institution_id)
     return _audited(s, who, "match.run", result)
 
@@ -429,6 +437,14 @@ class ResolveIn(BaseModel):
 @app.post("/exceptions/{exception_id}/resolve")
 def resolve(exception_id: int, body: ResolveIn, s: Session = Depends(get_session),
             user: Principal = Depends(require("resolve"))):
+    # Under the institution's lock, and re-read inside it: two staff clearing the same item at once
+    # get one allocation, and the loans are never updated on stale balances.
+    with matching_lock(s, user.institution_id):
+        s.expire_all()
+        return _resolve(exception_id, body, s, user)
+
+
+def _resolve(exception_id: int, body: ResolveIn, s: Session, user: Principal):
     e = s.get(ExceptionItem, exception_id)
     if not e or e.status != "open" or e.institution_id != user.institution_id:
         raise HTTPException(404, "open exception not found")
@@ -470,15 +486,15 @@ def dashboard(institution_id: int, s: Session = Depends(get_session)):
         .group_by(Transaction.status, Transaction.source)
     ):
         tx[status]["count"] += n
-        tx[status]["kes"] += (total or 0) / 100
-        tx[f"{source}_{status}"] = {"count": n, "kes": (total or 0) / 100}
+        tx[status]["kes"] += int(total or 0) / 100
+        tx[f"{source}_{status}"] = {"count": n, "kes": int(total or 0) / 100}
     exc = defaultdict(lambda: {"count": 0, "kes": 0.0})
     for kind, n, total in s.execute(
         select(ExceptionItem.kind, func.count(), func.sum(ExceptionItem.amount_cents))
         .where(ExceptionItem.institution_id == institution_id, ExceptionItem.status == "open")
         .group_by(ExceptionItem.kind)
     ):
-        exc[kind] = {"count": n, "kes": (total or 0) / 100}
+        exc[kind] = {"count": n, "kes": int(total or 0) / 100}
     processed = tx["allocated"]["count"] + tx["suspense"]["count"]
     return {
         "institution": inst.name,
@@ -891,8 +907,13 @@ def c2b_confirmation(token: str, body: dict, request: Request, s: Session = Depe
         t = Transaction(institution_id=inst.id, source="mpesa", reference=p.trans_id, txn_time=p.txn_time,
                         amount_cents=p.amount_cents, payer_name=p.payer_name, payer_phone=p.payer_phone,
                         account_ref=p.account_ref, narrative=p.transaction_type)
-        s.add(t)
-        s.flush()
+        try:
+            with s.begin_nested():  # Safaricom can send the same callback twice at the same moment
+                s.add(t)
+        except IntegrityError:
+            t = s.scalar(select(Transaction).where(Transaction.institution_id == inst.id,
+                                                   Transaction.source == "mpesa", Transaction.reference == p.trans_id))
+            existing = True
     elif t.amount_cents != p.amount_cents:  # repeat callback that disagrees with what we hold
         s.add(ExceptionItem(institution_id=inst.id, kind="c2b_mismatch", severity="high", transaction_id=t.id,
                             amount_cents=p.amount_cents,
@@ -912,7 +933,7 @@ def c2b_confirmation(token: str, body: dict, request: Request, s: Session = Depe
                         statement_confirmed_at=confirmed_at))
     s.commit()
     try:
-        with matching_lock(inst.id):
+        with matching_lock(s, inst.id):
             run_matching(s, inst.id)
     except Exception:  # the payment is stored; the next match run picks it up
         s.rollback()

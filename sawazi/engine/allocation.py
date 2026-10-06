@@ -180,7 +180,8 @@ def apply(s: Session, t: Transaction, member_id: int, preferred_loan_id: int | N
           rules: Rules | None = None) -> list[Allocation]:
     rules = rules or rules_for(s, t.institution_id)
     loans = list(s.scalars(select(Loan).where(Loan.institution_id == t.institution_id,
-                                              Loan.member_id == member_id, Loan.status == "active")))
+                                              Loan.member_id == member_id, Loan.status == "active")
+                           .order_by(Loan.id).with_for_update()))  # lock while balances change (PostgreSQL)
     states = {ln.id: LoanState.of(ln) for ln in loans}
     lines = plan(t.amount_cents, list(states.values()), rules, preferred_loan_id)
     for ln in loans:
