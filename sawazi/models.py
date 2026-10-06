@@ -248,7 +248,7 @@ class AuditEvent(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
     at: Mapped[datetime] = mapped_column(DateTime, index=True)
-    actor_kind: Mapped[str] = mapped_column(String(20))  # user | api_key | platform | anonymous | provider
+    actor_kind: Mapped[str] = mapped_column(String(20))  # user | api_key | platform | anonymous | provider | member
     actor_id: Mapped[int | None] = mapped_column(Integer)
     actor_name: Mapped[str] = mapped_column(String(200))  # snapshot, so renames don't rewrite history
     action: Mapped[str] = mapped_column(String(60), index=True)  # e.g. suspense.clear, user.update
@@ -414,3 +414,30 @@ class LoanDecision(Base):
     note: Mapped[str | None] = mapped_column(Text)
     appraisal_outcome: Mapped[str] = mapped_column(String(20))  # what the approver saw
     at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class Guarantee(Base):
+    """A member asked to guarantee part of another member's loan, and their answer.
+    Consent comes from the guarantor's own phone: a one-time link by SMS, and a PIN by SMS to accept.
+    Only hashes of the link token and PIN are stored."""
+
+    __tablename__ = "guarantees"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    application_id: Mapped[int] = mapped_column(ForeignKey("loan_applications.id"), index=True)
+    guarantor_member_id: Mapped[int] = mapped_column(ForeignKey("members.id"), index=True)
+    amount_cents: Mapped[int] = mapped_column(BigInteger)
+    # requested -> accepted | declined | expired | cancelled; accepted -> released (application withdrawn/declined)
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    phone: Mapped[str] = mapped_column(String(20))  # where the request and PIN went
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    pin_hash: Mapped[str | None] = mapped_column(String(64))
+    pin_expires_at: Mapped[datetime | None] = mapped_column(DateTime)
+    pin_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    pins_sent: Mapped[int] = mapped_column(Integer, default=0)
+    requested_by_user_id: Mapped[int] = mapped_column(ForeignKey("staff_users.id"))
+    requested_at: Mapped[datetime] = mapped_column(DateTime)
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime)
+    response_ip: Mapped[str | None] = mapped_column(String(45))
