@@ -1,0 +1,239 @@
+<title>Sawazi Demo Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: operator console. Summary strip, then check-off, then the two work queues (exceptions, collections). */
+:root {
+  --bg: #f5f6f3;
+  --surface: #ffffff;
+  --ink: #18201c;
+  --muted: #5d6a63;
+  --line: #dde2dc;
+  --accent: #0f6b4f;      /* cooperative green, used for Sawazi marks and primary numbers */
+  --accent-soft: #e2f0ea;
+  --good: #1d7a44;
+  --warn: #b26b00;
+  --bad: #b3261e;
+  --warn-soft: #fbefd9;
+  --bad-soft: #f9e1df;
+  --info-soft: #e7ecf5;
+  --f-display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111613; --surface: #19201c; --ink: #e6ebe7; --muted: #9aa69f; --line: #2c3530;
+    --accent: #4fc79a; --accent-soft: #173328; --good: #5cc98a; --warn: #e3a440; --bad: #f08a80;
+    --warn-soft: #3a2c12; --bad-soft: #3d1c1a; --info-soft: #1e2633; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111613; --surface: #19201c; --ink: #e6ebe7; --muted: #9aa69f; --line: #2c3530;
+  --accent: #4fc79a; --accent-soft: #173328; --good: #5cc98a; --warn: #e3a440; --bad: #f08a80;
+  --warn-soft: #3a2c12; --bad-soft: #3d1c1a; --info-soft: #1e2633; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-inline: 16px; padding-block: 24px 56px; display: grid; gap: 28px; }
+h1, h2 { font-family: var(--f-display); text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(1.6rem, 4vw, 2.2rem); letter-spacing: -0.01em; }
+h2 { font-size: 1.2rem; }
+.num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.eyebrow { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.muted { color: var(--muted); }
+
+header { display: grid; gap: 10px; }
+.brand { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mark { font-family: var(--f-display); font-weight: 700; color: var(--accent); font-size: 1rem; letter-spacing: 0.04em; }
+.by { color: var(--muted); font-size: 0.85rem; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 0.75rem; padding: 3px 9px; border-radius: 99px; background: var(--warn-soft); color: var(--warn); font-weight: 600; }
+.lede { max-width: 68ch; color: var(--muted); margin: 0; }
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.kpi { background: var(--surface); padding: 16px 18px; display: grid; gap: 4px; align-content: start; }
+.kpi .v { font-family: var(--f-mono); font-size: 1.9rem; font-weight: 500; color: var(--accent); line-height: 1.1; font-variant-numeric: tabular-nums; }
+.kpi .s { font-size: 0.85rem; color: var(--muted); }
+.kpi .v .from { font-size: 1rem; color: var(--muted); text-decoration: line-through; margin-right: 6px; }
+
+section { display: grid; gap: 12px; min-width: 0; }
+.section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+
+/* check-off */
+.emp { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+.emp .panel { padding: 16px 18px; display: grid; gap: 12px; }
+.emp-top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.emp-name { font-weight: 600; }
+.rate { font-family: var(--f-mono); font-size: 1.4rem; color: var(--accent); }
+.meter { height: 8px; background: var(--accent-soft); border-radius: 99px; overflow: hidden; }
+.meter > i { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
+.money { display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--muted); gap: 8px; flex-wrap: wrap; }
+.tally { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.tally div { display: grid; gap: 2px; text-align: center; padding: 8px 4px; border-radius: 8px; background: var(--bg); }
+.tally b { font-family: var(--f-mono); font-size: 1.05rem; font-weight: 500; }
+.tally span { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.tally .is-bad b { color: var(--bad); } .tally .is-warn b { color: var(--warn); }
+
+/* queues */
+.filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.filters button { font: inherit; font-size: 0.8rem; padding: 5px 11px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.filters button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.filters button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.list { display: grid; max-height: 560px; overflow-y: auto; }
+.row { display: grid; grid-template-columns: 6px 1fr auto; gap: 12px; padding: 12px 16px 12px 0; border-top: 1px solid var(--line); align-items: start; }
+.row:first-child { border-top: 0; }
+.stripe { align-self: stretch; border-radius: 0 3px 3px 0; }
+.sev-high .stripe { background: var(--bad); } .sev-medium .stripe { background: var(--warn); } .sev-low .stripe { background: var(--line); }
+.row .t { display: grid; gap: 3px; min-width: 0; }
+.row .k { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.row .d { font-size: 0.9rem; overflow-wrap: anywhere; }
+.row .amt { font-family: var(--f-mono); font-size: 0.9rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.grid2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 860px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+
+.q { display: grid; grid-template-columns: 44px 1fr auto; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--line); align-items: start; }
+.q:first-child { border-top: 0; }
+.score { font-family: var(--f-mono); font-size: 1.1rem; text-align: center; padding-top: 2px; }
+.score small { display: block; font-size: 0.62rem; color: var(--muted); letter-spacing: 0.05em; }
+.q .who { font-weight: 600; }
+.q .meta { font-size: 0.8rem; color: var(--muted); }
+.pill { font-size: 0.7rem; font-weight: 600; padding: 2px 8px; border-radius: 99px; white-space: nowrap; }
+.ch-sms { background: var(--info-soft); color: var(--ink); }
+.ch-call { background: var(--accent-soft); color: var(--accent); }
+.ch-guarantor_notice { background: var(--warn-soft); color: var(--warn); }
+.ch-field_visit, .ch-recovery { background: var(--bad-soft); color: var(--bad); }
+details { margin-top: 4px; }
+summary { cursor: pointer; font-size: 0.8rem; color: var(--accent); }
+.msg { margin-top: 6px; font-size: 0.85rem; background: var(--bg); border-radius: 8px; padding: 8px 10px; }
+
+.methods { display: grid; gap: 8px; padding: 16px 18px; }
+.m { display: grid; grid-template-columns: minmax(120px, 190px) 1fr 44px; gap: 10px; align-items: center; font-size: 0.85rem; }
+.m .bar { height: 10px; background: var(--bg); border-radius: 99px; overflow: hidden; }
+.m .bar i { display: block; height: 100%; border-radius: 99px; }
+.m .auto i { background: var(--accent); } .m .hold i { background: var(--warn); }
+.m .c { font-family: var(--f-mono); text-align: right; }
+.legend { display: flex; gap: 14px; font-size: 0.78rem; color: var(--muted); flex-wrap: wrap; }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.legend .a::before { background: var(--accent); } .legend .h::before { background: var(--warn); }
+footer { font-size: 0.8rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 14px; }
+@media (max-width: 480px) { .tally { grid-template-columns: repeat(3, 1fr); } .row .amt { font-size: 0.8rem; } }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="brand"><span class="mark">Sawazi</span><span class="by">by Pesara</span><span class="chip">Fictional sample data</span></div>
+    <h1>Ufanisi Teachers SACCO · September 2026</h1>
+    <p class="lede">One month of M-Pesa, bank and employer check-off money run through Sawazi: every payment matched to a member, split across arrears, instalments and deposits, and everything unclear put in front of a person with a reason.</p>
+  </header>
+
+  <div class="kpis" id="kpis"></div>
+
+  <section>
+    <div class="section-head"><h2>Check-off: what employers sent versus what was scheduled</h2><span class="eyebrow">Period 2026-09</span></div>
+    <div class="emp" id="emp"></div>
+  </section>
+
+  <div class="grid2">
+    <section>
+      <div class="section-head"><h2>Needs a person</h2><span class="muted num" id="exc-count"></span></div>
+      <div class="filters" id="exc-filters" role="group" aria-label="Filter exceptions"></div>
+      <div class="panel list" id="exc"></div>
+    </section>
+    <section>
+      <div class="section-head"><h2>Collections queue</h2><span class="muted num" id="q-count"></span></div>
+      <div class="filters" id="q-filters" role="group" aria-label="Filter collections"></div>
+      <div class="panel list" id="queue"></div>
+    </section>
+  </div>
+
+  <section>
+    <div class="section-head"><h2>How each payment was matched</h2>
+      <div class="legend"><span class="a">Allocated automatically</span><span class="h">Held for review</span></div></div>
+    <div class="panel methods" id="methods"></div>
+  </section>
+
+  <footer>All members, employers and amounts are invented for this demo. Matching accuracy is measured against an answer key built into the sample data.</footer>
+</div>
+
+<script>
+const D = /*DATA*/null;
+const kes = (n, d = 0) => "KES " + Number(n).toLocaleString("en-KE", { maximumFractionDigits: d, minimumFractionDigits: d });
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const el = id => document.getElementById(id);
+
+// KPIs
+const m = D.matching, acc = D.accuracy, pb = D.portfolio_before, pa = D.portfolio_after;
+el("kpis").innerHTML = [
+  ["Matched automatically", `${m.auto_match_rate}%`, `${m.allocated} of ${m.processed} payments, ${kes(m.allocated_cents / 100)}`],
+  ["Posted to the right member", `${acc.precision_pct}%`, `${acc.auto_allocated_correct} of ${acc.auto_allocated_correct + acc.auto_allocated_wrong} checked against the answer key; 3 look-alike typos held back`],
+  ["In suspense", `${m.suspense}`, `${kes(m.suspense_cents / 100)} waiting, each with a reason and most with a suggested member`],
+  ["Portfolio at risk (PAR 1)", `<span class="from">${pb.par_1.toFixed(0)}%</span>${pa.par_1.toFixed(0)}%`, `After September payments were applied. PAR 30: ${pa.par_30.toFixed(1)}%`],
+].map(([k, v, s]) => `<div class="kpi"><span class="eyebrow">${k}</span><span class="v">${v}</span><span class="s">${s}</span></div>`).join("");
+
+// Check-off
+el("emp").innerHTML = D.checkoff.map(c => `
+  <div class="panel">
+    <div class="emp-top"><span class="emp-name">${esc(c.employer)}</span><span class="rate">${c.collection_rate_pct}%</span></div>
+    <div class="meter" role="img" aria-label="${c.collection_rate_pct}% collected"><i style="width:${Math.min(c.collection_rate_pct, 100)}%"></i></div>
+    <div class="money"><span>Expected <b class="num">${kes(c.expected_kes)}</b></span><span>Received <b class="num">${kes(c.remitted_kes)}</b></span></div>
+    <div class="tally">
+      <div><b>${c.exact || 0}</b><span>Exact</span></div>
+      <div class="is-warn"><b>${c.short || 0}</b><span>Short</span></div>
+      <div class="is-bad"><b>${c.missing || 0}</b><span>Missing</span></div>
+      <div><b>${c.over || 0}</b><span>Over</span></div>
+      <div class="is-bad"><b>${c.unidentified || 0}</b><span>Unknown</span></div>
+    </div>
+  </div>`).join("");
+
+// Exceptions
+const KIND = { suspense: "Suspense", checkoff_missing: "Check-off missing", checkoff_short: "Check-off short",
+  checkoff_over: "Check-off over", checkoff_unidentified: "Unknown payroll line", checkoff_unscheduled: "Not on schedule",
+  possible_double_payment: "Possible double payment", third_party_payment: "Third-party payment", large_payment: "Large payment" };
+const kinds = ["all", ...new Set(D.exceptions.map(e => e.kind))];
+let excFilter = "all";
+function drawExc() {
+  const rows = D.exceptions.filter(e => excFilter === "all" || e.kind === excFilter);
+  el("exc-count").textContent = `${rows.length} open`;
+  el("exc").innerHTML = rows.map(e => `
+    <div class="row sev-${e.severity}"><span class="stripe"></span>
+      <div class="t"><span class="k">${KIND[e.kind] || e.kind} · ${e.severity}</span><span class="d">${esc(e.detail.replace(/^\[[^\]]+\]\s*/, ""))}</span></div>
+      <span class="amt">${kes(e.amount_kes)}</span></div>`).join("");
+  el("exc-filters").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.k === excFilter));
+}
+el("exc-filters").innerHTML = kinds.map(k => `<button type="button" data-k="${k}">${k === "all" ? "All" : (KIND[k] || k)}</button>`).join("");
+el("exc-filters").addEventListener("click", e => { if (e.target.dataset.k) { excFilter = e.target.dataset.k; drawExc(); } });
+drawExc();
+
+// Collections
+const CH = { sms: "SMS", call: "Call", guarantor_notice: "Guarantor notice", field_visit: "Field visit", recovery: "Recovery" };
+const chans = ["all", ...Object.keys(CH).filter(c => D.reminders.some(r => r.channel === c))];
+let qFilter = "all";
+function drawQ() {
+  const rows = D.reminders.filter(r => qFilter === "all" || r.channel === qFilter);
+  el("q-count").textContent = `${rows.length} loans · ${kes(rows.reduce((a, r) => a + r.arrears_kes, 0))}`;
+  el("queue").innerHTML = rows.map(r => `
+    <div class="q"><div class="score">${r.priority}<small>PRIORITY</small></div>
+      <div style="min-width:0"><div class="who">${esc(r.member)} <span class="muted num" style="font-weight:400">${r.member_no}</span></div>
+        <div class="meta num">${r.loan_no} · ${r.dpd} days · ${kes(r.arrears_kes)} overdue · ${r.via === "checkoff" ? "check-off" : r.via}</div>
+        <details><summary>Drafted message</summary><div class="msg">${esc(r.message)}</div></details></div>
+      <span class="pill ch-${r.channel}">${CH[r.channel]}</span></div>`).join("");
+  el("q-filters").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.k === qFilter));
+}
+el("q-filters").innerHTML = chans.map(k => `<button type="button" data-k="${k}">${k === "all" ? "All" : CH[k]}</button>`).join("");
+el("q-filters").addEventListener("click", e => { if (e.target.dataset.k) { qFilter = e.target.dataset.k; drawQ(); } });
+drawQ();
+
+// Match methods
+const ML = { member_no: "Member number", loan_no: "Loan number", phone: "Registered phone", id_number: "ID number",
+  "member_no_typo+corroborated": "Typo, confirmed by phone/name", ref_conflict: "Typo hitting another member",
+  name: "Name only (suggestion)", none: "No evidence" };
+const meth = Object.entries(D.match_methods).sort((a, b) => b[1].count - a[1].count);
+const max = Math.max(...meth.map(([, v]) => v.count));
+el("methods").innerHTML = meth.map(([k, v]) => {
+  const auto = (v.status.allocated || 0) > 0;
+  return `<div class="m"><span>${ML[k] || k}</span><span class="bar ${auto ? "auto" : "hold"}"><i style="width:${Math.max(2, 100 * v.count / max)}%"></i></span><span class="c">${v.count}</span></div>`;
+}).join("");
+</script>
