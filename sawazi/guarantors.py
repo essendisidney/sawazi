@@ -76,8 +76,10 @@ def effective_status(g: Guarantee) -> str:
 
 def request_sms(inst: Institution, applicant: Member, a: LoanApplication, g: Guarantee, link: str) -> str:
     first = applicant.name.split()[0].title()
+    code = os.getenv("SAWAZI_USSD_CODE", "").strip()  # e.g. *483*77#, once Taifa provisions it
+    how = f"Open {link} or dial {code}" if code else f"Open {link}"
     return (f"{inst.name}: {applicant.name.title()} ({applicant.member_no}) asks you to guarantee "
-            f"{kes(g.amount_cents)} of their {kes(a.amount_cents)} loan. Open {link} to accept or decline. "
+            f"{kes(g.amount_cents)} of their {kes(a.amount_cents)} loan. {how} to accept or decline. "
             f"Only accept if you know {first} asked.")
 
 
@@ -125,3 +127,61 @@ def summary(inst: Institution, applicant: Member, a: LoanApplication, prod: Loan
 <p class="muted small">If {esc(applicant.name.split()[0].title())} does not repay, the SACCO can recover up to
 {esc(kes(g.amount_cents))} from your deposits. Only accept if you know them and agreed to this.
 <br><i>Ukikubali, akiba yako inaweza kutumika kulipa deni hili hadi {esc(kes(g.amount_cents))} asipolipa.</i></p>"""
+
+
+# ---------------------------------------------------------------- answers (shared by the web page and USSD)
+
+def _member_principal(institution_id: int, name: str):
+    from .auth import Principal
+    return Principal("member", None, institution_id, "", name)
+
+
+def record_answer(s: Session, guarantee_id: int, answer: str, ip: str | None, via: str) -> str:
+    """Record a guarantor's accept/decline, whatever channel it came by. Returns accepted | declined |
+    closed (no longer open) | capacity (deposits no longer cover it). The caller commits.
+
+    Locks the guarantee, then the guarantor's member row, before checking capacity: two loans can never
+    both take the same deposits, however many channels and API workers answer at once."""
+    from . import audit
+
+    g = s.scalar(select(Guarantee).where(Guarantee.id == guarantee_id).with_for_update())
+    a = s.get(LoanApplication, g.application_id)
+    if effective_status(g) != "requested" or a.status not in OPEN_APPLICATION:
+        return "closed"
+    m = s.scalar(select(Member).where(Member.id == g.guarantor_member_id).with_for_update())
+    if answer == "accept":
+        free = free_capacity(s, m)
+        if free is None or g.amount_cents > free:
+            return "capacity"
+    g.status = "accepted" if answer == "accept" else "declined"
+    g.responded_at, g.response_ip, g.pin_hash = utcnow(), ip, None
+    after = {"status": g.status, "via": via}
+    if g.status == "accepted":
+        after |= {"amount_cents": g.amount_cents, "phone": g.phone}
+    audit.record(s, _member_principal(g.institution_id, m.name), f"guarantee.{answer}", "guarantee", g.id,
+                 before={"status": "requested"}, after=after, ip=ip)
+    return g.status
+
+
+# ---------------------------------------------------------------- release when the loan is repaid
+
+def release_repaid(s: Session, institution_id: int) -> int:
+    """Release the guarantees on loans that are now fully repaid (closed), so the guarantors' deposits are free
+    again. Written-off loans keep a balance, so their guarantors stay liable. The caller commits."""
+    from . import audit
+    from .auth import Principal
+    from .models import Loan
+
+    s.flush()
+    rows = s.execute(
+        select(Guarantee, Loan)
+        .join(LoanApplication, Guarantee.application_id == LoanApplication.id)
+        .join(Loan, LoanApplication.disbursed_loan_id == Loan.id)
+        .where(Guarantee.institution_id == institution_id, Guarantee.status == "accepted", Loan.status == "closed")
+    ).all()
+    system = Principal("system", None, institution_id, "", "Sawazi")
+    for g, ln in rows:  # (the query ran after a flush, so a loan closed moments ago in this session counts)
+        g.status = "released"
+        audit.record(s, system, "guarantee.release", "guarantee", g.id, before={"status": "accepted"},
+                     after={"status": "released"}, note=f"loan {ln.loan_no} repaid")
+    return len(rows)

@@ -20,14 +20,15 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import audit, auth, daraja, guarantors, sms
+from . import audit, auth, daraja, guarantors, sms, ussd
 from .auth import API_KEY_ROLES, PERMISSIONS, ROLES, Principal, require
 from .db import get_session, init_db
 from .engine.checkoff import reconcile_checkoff
@@ -320,7 +321,10 @@ async def import_file(
     content = await file.read()
     note = f"file {file.filename}"
     if kind in IMPORTERS:
-        return _audited(s, who, f"import.{kind}", IMPORTERS[kind](s, institution_id, content).as_dict(), note)
+        result = IMPORTERS[kind](s, institution_id, content).as_dict()
+        if kind == "loans":  # loans the core system now shows as repaid free their guarantors
+            result["guarantees_released"] = guarantors.release_repaid(s, institution_id)
+        return _audited(s, who, f"import.{kind}", result, note)
     if kind in {"checkoff_schedule", "checkoff_remittance"}:
         if not employer or not period:
             raise HTTPException(422, "employer and period are required for check-off imports")
@@ -343,6 +347,7 @@ def match(institution_id: int, s: Session = Depends(get_session), who: Principal
     _inst(s, institution_id)
     with matching_lock(s, institution_id):
         result = run_matching(s, institution_id)
+    result["guarantees_released"] = guarantors.release_repaid(s, institution_id)
     return _audited(s, who, "match.run", result)
 
 
@@ -463,6 +468,7 @@ def _resolve(exception_id: int, body: ResolveIn, s: Session, user: Principal):
         allocs = allocate(s, t, m.id)
         e.detail += f" | Cleared to {m.member_no}" + (f": {body.note}" if body.note else "")
         e.status = "resolved"
+        guarantors.release_repaid(s, e.institution_id)  # this payment may have finished a loan
         audit.record(s, user, "suspense.clear", "exception", e.id, before=before, note=body.note, after={
             "status": e.status, "transaction_status": t.status, "member_id": m.id, "member_no": m.member_no,
             "allocations": [{"target": a.target, "loan_id": a.loan_id, "amount_cents": a.amount_cents} for a in allocs],
@@ -540,7 +546,7 @@ def audit_log(
     action: str | None = Query(None, description="exact action, or a prefix ending in '.', e.g. 'user.'"),
     entity_type: str | None = None,
     entity_id: int | None = None,
-    actor_kind: str | None = Query(None, pattern="^(user|api_key|platform|anonymous|provider|member)$"),
+    actor_kind: str | None = Query(None, pattern="^(user|api_key|platform|anonymous|provider|member|system)$"),
     actor_id: int | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
@@ -937,6 +943,8 @@ def c2b_confirmation(token: str, body: dict, request: Request, s: Session = Depe
     try:
         with matching_lock(s, inst.id):
             run_matching(s, inst.id)
+            guarantors.release_repaid(s, inst.id)
+            s.commit()
     except Exception:  # the payment is stored; the next match run picks it up
         s.rollback()
         log.exception("C2B real-time matching failed for institution %s", inst.id)
@@ -1550,11 +1558,26 @@ def guarantor_exposure(institution_id: int, member_no: str, s: Session = Depends
                                                   Guarantee.guarantor_member_id == m.id,
                                                   Guarantee.status.in_(("requested", "accepted")))))
     free = guarantors.free_capacity(s, m)
+    out = []
+    for g in rows:
+        if guarantors.effective_status(g) == "expired":
+            continue
+        row = _guarantee_out(s, g)
+        a = s.get(LoanApplication, g.application_id)
+        ln = s.get(Loan, a.disbursed_loan_id) if a.disbursed_loan_id else None
+        if ln is not None and g.status == "accepted":
+            # Their share of what is still owed: the pledge shrinks with the loan, for information.
+            # The full pledge stays committed until the loan is repaid.
+            share = -(-g.amount_cents * max(ln.balance_cents, 0) // max(ln.principal_cents, 1))
+            row |= {"loan_no": ln.loan_no, "loan_balance_kes": ln.balance_cents / 100,
+                    "at_risk_kes": min(share, g.amount_cents) / 100}
+        out.append(row)
     return {"member_no": m.member_no, "name": m.name,
             "deposits_kes": m.deposits_cents / 100 if m.deposits_cents is not None else None,
             "pledged_kes": guarantors.pledged_cents(s, institution_id, m.id) / 100,
             "free_kes": free / 100 if free is not None else None,
-            "guarantees": [_guarantee_out(s, g) for g in rows if guarantors.effective_status(g) != "expired"]}
+            "at_risk_kes": sum(r.get("at_risk_kes", 0) for r in out),
+            "guarantees": out}
 
 
 # ---------------------------------------------------------------- the guarantor's own page (public, by link)
@@ -1657,17 +1680,9 @@ def consent_accept(token: str, request: Request, pin: str = Form(""), s: Session
         g.pin_attempts += 1
         s.commit()
         return _back(token, "pin-wrong")
-    # Capacity again, now, with the guarantor's row locked: two loans cannot both take the same deposits.
-    m = s.scalar(select(Member).where(Member.id == g.guarantor_member_id).with_for_update())
-    free = guarantors.free_capacity(s, m)
-    if free is None or g.amount_cents > free:
+    result = guarantors.record_answer(s, g.id, "accept", request.client.host if request.client else None, "web")
+    if result == "capacity":
         return _back(token, "capacity")
-    ip = request.client.host if request.client else None
-    g.status, g.responded_at, g.response_ip = "accepted", auth.utcnow(), ip
-    g.pin_hash = None
-    audit.record(s, replace(_GUARANTOR, institution_id=g.institution_id, name=m.name), "guarantee.accept",
-                 "guarantee", g.id, before={"status": "requested"},
-                 after={"status": "accepted", "amount_cents": g.amount_cents, "phone": g.phone}, ip=ip)
     s.commit()
     return _back(token)
 
@@ -1679,16 +1694,54 @@ def consent_decline(token: str, request: Request, s: Session = Depends(get_sessi
         return _consent_page(s, g, token)
     if guarantors.effective_status(g) != "requested":
         return _back(token)
-    m = s.get(Member, g.guarantor_member_id)
-    ip = request.client.host if request.client else None
-    g.status, g.responded_at, g.response_ip, g.pin_hash = "declined", auth.utcnow(), ip, None
-    audit.record(s, replace(_GUARANTOR, institution_id=g.institution_id, name=m.name), "guarantee.decline",
-                 "guarantee", g.id, before={"status": "requested"}, after={"status": "declined"}, ip=ip)
+    guarantors.record_answer(s, g.id, "decline", request.client.host if request.client else None, "web")
     s.commit()
     return _back(token)
 
 
-_GUARANTOR = Principal("member", None, 0, "", "")
+# ---------------------------------------------------------------- USSD guarantor consent
+# Taifa Mobile USSD (ussdbeta.taifamobile.co.ke/documentation): GET query, or POST as JSON, form or multipart,
+# with MSISDN, SESSION_ID, SERVICE_CODE, USSD_STRING; reply text/plain starting CON or END.
+# Register https://<host>/callbacks/ussd/<SAWAZI_USSD_CALLBACK_TOKEN> as the service's callback URL.
+# On a shared code the first part of USSD_STRING is the routing shortcut (e.g. "100" for *252*100#):
+# set SAWAZI_USSD_SHORTCUT to it so it is not read as a menu choice. A dedicated code has no shortcut.
+
+def ussd_input(raw: str, shortcut: str | None) -> str:
+    """The guarantor's own choices from the raw input path, e.g. "100*1*4321" -> "1*4321" (shortcut 100)."""
+    parts = [p.strip() for p in (raw or "").split("*") if p.strip() != ""]  # as Taifa's sample: ignore empties
+    if shortcut and parts and parts[0] == shortcut:
+        parts = parts[1:]
+    return "*".join(parts)
+
+
+@app.api_route("/callbacks/ussd/{token}", methods=["GET", "POST"], include_in_schema=False)
+async def ussd_callback(token: str, request: Request, s: Session = Depends(get_session)):
+    expected = os.getenv("SAWAZI_USSD_CALLBACK_TOKEN")
+    if not expected or not hmac.compare_digest(token, expected):
+        raise HTTPException(404, "not found")
+    ip = request.client.host if request.client else None
+    allowed = {x.strip() for x in os.getenv("SAWAZI_USSD_ALLOWED_IPS", "").split(",") if x.strip()}
+    if allowed and ip not in allowed:
+        raise HTTPException(404, "not found")
+    fields: dict = dict(request.query_params)
+    if request.method == "POST":
+        if "json" in request.headers.get("content-type", ""):
+            body = await request.json()
+            fields |= body if isinstance(body, dict) else {}
+        else:
+            fields |= {k: v for k, v in (await request.form()).items() if isinstance(v, str)}
+
+    def field(*names: str) -> str:
+        return next((str(fields[n]) for n in names if fields.get(n) not in (None, "")), "")
+
+    session_id = field("SESSION_ID", "sessionId")[:100]
+    phone = norm_phone(field("MSISDN", "phoneNumber"))
+    raw = field("USSD_STRING", "text")[:200]
+    text = ussd_input(raw, os.getenv("SAWAZI_USSD_SHORTCUT", "").strip() or None)
+
+    # database work off the event loop
+    reply = await run_in_threadpool(ussd.handle, s, session_id, phone, text, ip)
+    return PlainTextResponse(reply, media_type="text/plain; charset=utf-8")
 
 
 # ---------------------------------------------------------------- staff web console

@@ -248,7 +248,7 @@ class AuditEvent(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
     at: Mapped[datetime] = mapped_column(DateTime, index=True)
-    actor_kind: Mapped[str] = mapped_column(String(20))  # user | api_key | platform | anonymous | provider | member
+    actor_kind: Mapped[str] = mapped_column(String(20))  # user | api_key | platform | anonymous | provider | member | system
     actor_id: Mapped[int | None] = mapped_column(Integer)
     actor_name: Mapped[str] = mapped_column(String(200))  # snapshot, so renames don't rewrite history
     action: Mapped[str] = mapped_column(String(60), index=True)  # e.g. suspense.clear, user.update
@@ -441,3 +441,17 @@ class Guarantee(Base):
     requested_at: Mapped[datetime] = mapped_column(DateTime)
     responded_at: Mapped[datetime | None] = mapped_column(DateTime)
     response_ip: Mapped[str | None] = mapped_column(String(45))
+
+
+class UssdSession(Base):
+    """Which guarantee each menu number meant when the list was shown, so an answer always lands on the
+    request the guarantor actually read, even if their list changes mid-session. Not institution-scoped:
+    one shortcode serves every SACCO, and a phone may guarantee at several."""
+
+    __tablename__ = "ussd_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(100), unique=True)
+    phone: Mapped[str] = mapped_column(String(20))
+    guarantee_ids: Mapped[list] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, index=True)

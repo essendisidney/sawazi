@@ -29,7 +29,7 @@ It sits beside any core banking system and works from the CSV/Excel exports ever
 pip install -r requirements.txt
 python scripts/make_sample_data.py      # fictional test data
 python scripts/run_demo.py              # full pipeline -> demo_output.json
-python -m pytest -q                     # 210 tests
+python -m pytest -q                     # 228 tests
 uvicorn sawazi.api:app --reload          # API at http://localhost:8000/docs
 ```
 
@@ -106,6 +106,22 @@ decision; the core system disburses from the hand-over file, and the loan comes 
    and is flagged "approved with exceptions".
 6. **Hand-over.** Accountants download approved loans for the core system (each loan once). When the disbursed loan
    appears in the next loans upload with the same member and amount, and only one application matches, it is linked.
+7. **Release.** When a disbursed loan is repaid (closed in the loans upload, or paid off by a payment Sawazi
+   allocates), its guarantors are released and their deposits are free again. Written-off loans keep a balance, so
+   their guarantors stay liable. The exposure view also shows each guarantor's share of what is still owed.
+
+**USSD consent** works on any phone. The guarantor dials the shortcode, picks a request, and accepts by entering the
+last 4 digits of their ID number (the phone number itself comes from the network). The list a guarantor saw is saved
+per session, so an answer always lands on the request they read. It follows Taifa Mobile's USSD gateway
+([documentation](https://ussdbeta.taifamobile.co.ke/documentation)): GET or POST (JSON, form or multipart) with
+`MSISDN`, `SESSION_ID`, `SERVICE_CODE`, `USSD_STRING`; replies are plain text starting `CON` or `END`. Settings:
+- `SAWAZI_USSD_CALLBACK_TOKEN`: register `https://<host>/callbacks/ussd/<token>` as the service's callback URL
+- `SAWAZI_USSD_SHORTCUT`: on a shared code such as `*252*100#`, the routing shortcut (`100`) that starts every
+  `USSD_STRING`; leave unset on a dedicated code
+- `SAWAZI_USSD_CODE`: the code members dial (e.g. `*252*100#`), so guarantor SMS mention it
+- `SAWAZI_USSD_ALLOWED_IPS` (optional): Taifa's gateway addresses, once they confirm them
+Try it in Taifa's USSD Sandbox Simulator first. Taifa bills once per session and blocks sessions when the USSD
+wallet is empty, so keep it topped up.
 
 All of it is in the console (Loans, Products) and the audit log.
 
@@ -269,7 +285,8 @@ sawazi/
   auth.py              staff login, roles, institution scoping, API keys
   audit.py             append-only audit log of every manual action
   sms.py               SMS providers: Taifa Mobile client, simulator
-  guarantors.py        guarantor capacity, one-time links, PINs, consent page
+  guarantors.py        guarantor capacity, one-time links, PINs, consent page, release on repayment
+  ussd.py              guarantor consent by USSD
   engine/appraisal.py  loan appraisal rules (pure)
   daraja.py            M-Pesa Daraja C2B callback parsing, URL registration
   console/             staff web console (static HTML/CSS/JS served at /console/)
@@ -286,6 +303,6 @@ tests/                 pytest suite
 
 ## Next
 
-Phase 2 in progress: loan factory and SMS guarantor consent are built. Next: USSD guarantor consent (needs a USSD shortcode from Taifa Mobile).
+Phase 2 is complete (go-live of USSD waits on a Taifa Mobile shortcode). Phase 3: exposure and risk view, board pack, SASRA/CBK returns, member app.
 
 Before any real member data: ODPC registration and a data processing agreement with each pilot institution.

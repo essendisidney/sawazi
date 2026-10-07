@@ -170,7 +170,7 @@ def _api_key(s: Session, token: str) -> ApiKey:
 class Principal:
     """Whoever is calling: a staff user or an institution API key."""
 
-    kind: str  # user | api_key | platform | anonymous | provider | member
+    kind: str  # user | api_key | platform | anonymous | provider | member | system
     id: int | None
     institution_id: int
     role: str
