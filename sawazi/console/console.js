@@ -166,8 +166,10 @@ const VIEWS = {
   suspense: { label: "Suspense", need: "read", render: viewSuspense, badge: () => state.counts?.suspense },
   exceptions: { label: "Exceptions", need: "read", render: viewExceptions, badge: () => state.counts?.other },
   collections: { label: "Collections", need: "read", render: viewCollections },
+  loans: { label: "Loans", need: "read", render: viewLoans },
   upload: { label: "Upload", need: "reconcile", render: viewUpload },
   rules: { label: "Allocation rules", need: "read", render: viewRules },
+  products: { label: "Products", need: "read", render: viewProducts },
 };
 
 const inst = () => `/institutions/${state.me.institution_id}`;
@@ -209,14 +211,14 @@ function shell(name, content) {
 
 async function route() {
   if (!state.me) return;
-  const name = (location.hash.match(/^#\/(\w+)/) || [])[1];
+  const [, name, arg] = location.hash.match(/^#\/(\w+)(?:\/(\w+))?/) || [];
   const view = VIEWS[name] && can(VIEWS[name].need) ? name : "dashboard";
   const main = h("div", { class: "stack" }, h("p", { class: "muted" }, "Loading…"));
   await refreshCounts();
   shell(view, main);
   document.title = `${VIEWS[view].label} · Sawazi`;
   try {
-    main.replaceChildren(...[].concat(await VIEWS[view].render()).filter(Boolean));
+    main.replaceChildren(...[].concat(await VIEWS[view].render(arg)).filter(Boolean));
   } catch (e) {
     if (e.status !== 401) main.replaceChildren(note("err", e.message));
   }
@@ -533,7 +535,8 @@ const IMPORTS = [
   ["bank", "Bank statement", "Date, narrative, reference and credit columns."],
   ["checkoff_remittance", "Check-off remittance", "What the employer actually paid. Needs employer and month."],
   ["checkoff_schedule", "Check-off schedule", "What was due from the employer. Needs employer and month."],
-  ["members", "Members", "Export from the core banking system."],
+  ["members", "Members", "Export from the core banking system. Date joined, deposits, share capital and pay columns are read if present."],
+  ["member_balances", "Member balances or payroll", "Deposits and share capital (monthly), or gross and net pay from payroll, for existing members."],
   ["loans", "Loans", "Export from the core banking system."],
 ];
 
@@ -570,7 +573,8 @@ function uploadPanel() {
       fd.append("file", file.files[0]);
       const params = kind.value.startsWith("checkoff") ? { employer: employer.value.trim(), period: period.value } : {};
       const r = await api(`${inst()}/import/${kind.value}`, { method: "POST", form: fd, params });
-      const parts = [`${r.created} new`, `${r.skipped_duplicates} already in Sawazi`];
+      const parts = r.updated !== undefined ? [`${r.updated} members updated`]
+        : [`${r.created} new`, `${r.skipped_duplicates} already in Sawazi`];
       if (r.rejected_count) parts.push(`${plural(r.rejected_count, "row")} need a look (listed below)`);
       if (r.callbacks_confirmed) parts.push(`${r.callbacks_confirmed} real-time payments confirmed`);
       if (r.callbacks_mismatched) parts.push(`${r.callbacks_mismatched} real-time payments DISAGREE with the statement (see Exceptions)`);
@@ -739,6 +743,339 @@ function previewPanel(draft) {
     h("p", { class: "muted small" }, "See how a payment would be split with the rules on the left, before saving them."),
     h("div", { class: "row-form" }, h("label", null, "Member number", memberNo), h("label", null, "Amount", amount)),
     h("div", null, btn), slot);
+}
+
+// ------------------------------------------------------------------ loans
+
+const APP_STATUS = {
+  draft: "Draft", submitted: "Waiting for decision", approved: "Approved", declined: "Declined",
+  withdrawn: "Withdrawn", exported: "Sent to core system", disbursed: "Disbursed",
+};
+const CHECK_LABEL = {
+  amount: "Amount", term: "Term", membership: "Membership", arrears: "Existing arrears", deposits: "Deposits",
+  one_third: "One-third take-home", guarantors: "Guarantors",
+};
+const CHECK_MARK = { pass: "✓", fail: "✕", warn: "!", unknown: "?", pending: "…" };
+const OUTCOME = { passes: ["Passes every check", "ok"], fails: ["Fails a check", "err"], incomplete: ["Not complete yet", "warn"] };
+let loanFilter = "open";
+
+async function viewLoans(id) {
+  if (id) return viewApplication(Number(id));
+  const filters = { open: "draft,submitted", approved: "approved", done: "exported,disbursed", closed: "declined,withdrawn", all: "" };
+  const apps = await api(`${inst()}/loan-applications`, { params: { status: filters[loanFilter], limit: 300 } });
+  const head = h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Loans"),
+    h("p", { class: "muted" }, "Applications from capture to hand-over. Sawazi appraises and records each decision; the core system disburses.")));
+  const actions = h("div", { class: "actions" });
+  if (can("loan_apply")) actions.append(h("button", { type: "button", class: "primary", onclick: () => newApplication(head) }, "New application"));
+  if (can("loan_export")) {
+    const slot = h("div");
+    const btn = h("button", { type: "button" }, "Send approved loans to core");
+    btn.addEventListener("click", async () => {
+      const ok = await confirmDialog("Hand approved loans to the core system?",
+        h("p", null, "Downloads a file of every approved loan not yet sent, for the core system to disburse. Each loan is sent once and marked \"Sent to core system\"."),
+        "Download file");
+      if (ok) busy(btn, slot, async () => { await downloadExport(); route(); });
+    });
+    actions.append(btn, slot);
+  }
+  head.append(actions);
+  const chips = h("div", { class: "chips", role: "group", "aria-label": "Filter applications" },
+    [["open", "Open"], ["approved", "Approved"], ["done", "Sent / disbursed"], ["closed", "Declined / withdrawn"], ["all", "All"]]
+      .map(([k, label]) => h("button", { type: "button", "aria-pressed": String(k === loanFilter), onclick: () => { loanFilter = k; route(); } }, label)));
+  const rows = apps.map((a) => h("tr", null,
+    h("td", null, h("a", { href: `#/loans/${a.id}` }, `SWZ-${a.id}`)),
+    h("td", null, a.member, " ", h("span", { class: "num muted" }, a.member_no)),
+    h("td", null, a.product),
+    h("td", { class: "n" }, kes(a.amount_kes)),
+    h("td", null, h("span", { class: `pill app-${a.status}` }, APP_STATUS[a.status] || a.status)),
+    h("td", null, a.appraisal_outcome ? h("span", { class: `pill out-${a.appraisal_outcome}` }, OUTCOME[a.appraisal_outcome][0]) : h("span", { class: "muted small" }, "not submitted")),
+    h("td", { class: "small muted" }, when(a.submitted_at || a.created_at))));
+  return [head, chips, h("section", { class: "panel" }, apps.length === 0 ? h("div", { class: "empty" }, "No applications here.") :
+    h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Ref"), h("th", null, "Member"), h("th", null, "Product"), h("th", { class: "n" }, "Amount"),
+        h("th", null, "Status"), h("th", null, "Appraisal"), h("th", null, "Date"))),
+      h("tbody", null, rows))))];
+}
+
+async function downloadExport() {
+  const r = await fetch(`${inst()}/loan-applications/export.csv`, { method: "POST", headers: { Authorization: `Bearer ${state.token}` } });
+  if (!r.ok) throw new ApiError(r.status, "Could not create the file");
+  const blob = await r.blob();
+  const name = (r.headers.get("content-disposition") || "").match(/filename=([\w.-]+)/)?.[1] || "sawazi_loans.csv";
+  const a = h("a", { href: URL.createObjectURL(blob), download: name });
+  document.body.append(a); a.click(); a.remove();
+}
+
+async function newApplication(anchor) {
+  const products = (await api(`${inst()}/loan-products`)).filter((p) => p.active);
+  if (!products.length) {
+    anchor.after(note("warn", can("loan_products") ? "Create a loan product first (Products)." : "No loan products yet. Ask an admin to create one."));
+    return;
+  }
+  const memberNo = h("input", { type: "text", required: true, placeholder: "e.g. UT00104" });
+  const product = h("select", null, products.map((p) => h("option", { value: p.id }, `${p.code} · ${p.name}`)));
+  const amount = h("input", { type: "number", min: "1", step: "0.01", required: true });
+  const term = h("input", { type: "number", min: "1", max: "240", required: true });
+  const purpose = h("input", { type: "text", maxlength: "500", placeholder: "What the loan is for" });
+  const limits = h("p", { class: "muted small" });
+  const sync = () => {
+    const p = products.find((x) => String(x.id) === product.value);
+    limits.textContent = `${kes(p.min_amount_kes)} to ${kes(p.max_amount_kes)}, up to ${p.max_term_months} months at ${p.interest_rate_pct}% a year.`;
+    term.max = p.max_term_months;
+  };
+  product.addEventListener("change", sync); sync();
+  const slot = h("div");
+  const go = h("button", { type: "submit", class: "primary" }, "Create draft");
+  const dlg = h("dialog", { "aria-labelledby": "new-app" });
+  const close = () => { dlg.close(); dlg.remove(); };
+  dlg.append(h("form", { class: "dlg", onsubmit: (e) => {
+    e.preventDefault();
+    busy(go, slot, async () => {
+      const a = await api(`${inst()}/loan-applications`, { method: "POST",
+        body: { member_no: memberNo.value.trim(), product_id: Number(product.value), amount_kes: amount.value,
+                term_months: Number(term.value), purpose: purpose.value.trim() || null } });
+      close();
+      location.hash = `#/loans/${a.id}`;
+    });
+  } },
+    h("h2", { id: "new-app" }, "New loan application"),
+    h("label", null, "Member number", memberNo),
+    h("label", null, "Product", product), limits,
+    h("div", { class: "row-form" }, h("label", null, "Amount (KES)", amount), h("label", null, "Months", term)),
+    h("label", null, "Purpose", purpose), slot,
+    h("div", { class: "actions" }, h("button", { type: "button", onclick: close }, "Cancel"), go)));
+  dlg.addEventListener("cancel", (e) => { e.preventDefault(); close(); });
+  document.body.append(dlg);
+  dlg.showModal();
+  memberNo.focus();
+}
+
+function appraisalPanel(ap) {
+  if (!ap) return h("section", { class: "panel pad" }, h("p", { class: "muted" }, "Not appraised yet."));
+  const [label, kind] = OUTCOME[ap.outcome];
+  return h("section", { class: "panel pad stack" },
+    h("div", { class: "item-top" }, h("h2", null, "Appraisal"), h("span", { class: `pill out-${ap.outcome}` }, label)),
+    h("ul", { class: "checks" }, ap.checks.map((c) => h("li", { class: `ck ck-${c.status}` },
+      h("span", { class: "ck-mark", "aria-hidden": "true" }, CHECK_MARK[c.status]),
+      h("span", null, h("b", null, CHECK_LABEL[c.code] || c.code), h("span", { class: "sr" }, ` (${c.status})`), ": ", c.message)))),
+    h("dl", { class: "kv" },
+      h("div", null, h("dt", null, "Estimated instalment"), h("dd", { class: "num" }, kes(ap.instalment_kes))),
+      h("div", null, h("dt", null, "Largest amount that qualifies"), h("dd", { class: "num" }, kes(ap.max_eligible_kes),
+        ap.max_eligible_partial ? h("div", { class: "muted small" }, `could be lower: ${ap.unknown_limits.map((k) => ({ affordability: "pay", deposits: "deposits" }[k] || k)).join(", ")} not known`) : null)),
+      h("div", null, h("dt", null, "Guarantor cover"), h("dd", { class: "num" }, `${kes(ap.accepted_cover_kes)} of ${kes(ap.required_cover_kes)}`))),
+    kind === "ok" ? null : h("p", { class: "muted small" }, "The instalment is an estimate for affordability only; the core system's schedule is the real one."));
+}
+
+async function viewApplication(id) {
+  const [a, gs] = await Promise.all([api(`${inst()}/loan-applications/${id}`), api(`${inst()}/loan-applications/${id}/guarantors`)]);
+  const open = a.status === "draft" || a.status === "submitted";
+  const head = h("div", { class: "head" },
+    h("div", { class: "stack" },
+      h("p", null, h("a", { href: "#/loans" }, "← Loans")),
+      h("h1", null, `SWZ-${a.id}: ${a.member}`),
+      h("p", { class: "muted" }, `${a.product_name} · ${kes(a.amount_kes)} over ${a.term_months} months`, a.purpose ? ` · ${a.purpose}` : "")),
+    h("span", { class: `pill app-${a.status}` }, APP_STATUS[a.status] || a.status));
+  const left = h("div", { class: "stack" }, appraisalPanel(a.appraisal), guarantorPanel(a, gs, open));
+  const right = h("div", { class: "stack" }, actionPanel(a), historyPanel(a));
+  return [head, a.override_reason ? note("warn", `Approved with exceptions: ${a.override_reason}`) : null, h("div", { class: "grid2" }, left, right)];
+}
+
+function guarantorPanel(a, gs, open) {
+  const slot = h("div");
+  const rows = gs.map((g) => h("tr", null,
+    h("td", null, g.name, " ", h("span", { class: "num muted" }, g.member_no)),
+    h("td", { class: "n" }, kes(g.amount_kes)),
+    h("td", null, h("span", { class: `pill gs-${g.status}` }, g.status)),
+    h("td", null, open && can("loan_apply") && (g.status === "requested" || g.status === "accepted")
+      ? h("button", { type: "button", class: "link", onclick: async (e) => {
+          const ok = await confirmDialog(`Cancel ${g.name}'s guarantee?`, h("p", null, g.status === "accepted" ? "They accepted; cancelling releases their deposits." : "Their link will stop working."), "Cancel guarantee", { danger: true });
+          if (ok) busy(e.currentTarget, slot, async () => {
+            await api(`${inst()}/loan-applications/${a.id}/guarantors/${g.id}/cancel`, { method: "POST", params: { note: "cancelled by staff in the console" } });
+            route();
+          });
+        } }, "Cancel") : null)));
+  const panel = h("section", { class: "panel pad stack" }, h("h2", null, "Guarantors"),
+    gs.length ? h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Guarantor"), h("th", { class: "n" }, "Amount"), h("th", null, "Answer"), h("th", null, ""))),
+      h("tbody", null, rows))) : h("p", { class: "muted small" }, "No guarantors asked yet."));
+  if (open && can("loan_apply")) {
+    const memberNo = h("input", { type: "text", required: true, placeholder: "Member number", "aria-label": "Guarantor member number" });
+    const amount = h("input", { type: "number", min: "1", step: "0.01", required: true, placeholder: "KES", "aria-label": "Amount to guarantee" });
+    const info = h("p", { class: "muted small" });
+    memberNo.addEventListener("change", async () => {
+      info.textContent = "";
+      if (memberNo.value.trim().length < 2) return;
+      try {
+        const x = await api(`${inst()}/members/${encodeURIComponent(memberNo.value.trim())}/guarantor-exposure`);
+        info.textContent = x.free_kes === null ? `${x.name}: deposits not known, so they cannot guarantee yet.`
+          : `${x.name} can guarantee up to ${kes(x.free_kes)} (deposits ${kes(x.deposits_kes)}, already guaranteeing ${kes(x.pledged_kes)}).`;
+      } catch { info.textContent = "No member with that number."; }
+    });
+    const btn = h("button", { type: "submit" }, "Ask by SMS");
+    panel.append(h("form", { class: "stack", onsubmit: (e) => {
+      e.preventDefault();
+      busy(btn, slot, async () => {
+        const r = await api(`${inst()}/loan-applications/${a.id}/guarantors`, { method: "POST", body: { member_no: memberNo.value.trim(), amount_kes: amount.value } });
+        slot.replaceChildren(note("ok", `${r.name} has been sent a link to accept or decline${r.sms === "simulated" ? " (simulation: no SMS actually sent)" : ""}.`));
+        setTimeout(route, 1200);
+      });
+    } }, h("div", { class: "row-form" }, memberNo, amount, btn), info));
+  }
+  panel.append(slot);
+  return panel;
+}
+
+function actionPanel(a) {
+  const slot = h("div");
+  const panel = h("section", { class: "panel pad stack" }, h("h2", null, "Next step"));
+  const mine = state.me.id === a.prepared_by_user_id;
+  const decided = a.decisions.some((d) => d.user_id === state.me.id);
+  if (a.status === "draft" && can("loan_apply")) {
+    const submit = h("button", { type: "button", class: "primary" }, "Submit for decision");
+    submit.addEventListener("click", () => busy(submit, slot, async () => {
+      await api(`${inst()}/loan-applications/${a.id}/submit`, { method: "POST" }); route();
+    }));
+    panel.append(h("p", { class: "muted small" }, "Submitting sends it to the approvers with the appraisal as it stands. Ask guarantors before or after."),
+      h("div", { class: "actions" }, submit, withdrawButton(a, slot)));
+  } else if (a.status === "submitted") {
+    panel.append(h("p", null, `Waiting for ${a.approvals_needed === 2 ? "two approvers" : "an approver"}`,
+      a.decisions.length ? ` (${a.decisions.filter((d) => d.decision === "approve").length} approved so far).` : "."));
+    if (can("loan_approve") && !mine && !decided) panel.append(decisionForm(a, slot));
+    else if (can("loan_approve") && mine) panel.append(note("info", "You prepared this application, so another approver must decide."));
+    if (can("loan_apply")) panel.append(h("div", { class: "actions" }, withdrawButton(a, slot)));
+  } else {
+    const text = { approved: "Approved. An accountant sends it to the core system for disbursement.",
+      exported: "Sent to the core system. It is marked disbursed when the loan appears in the next loans upload.",
+      disbursed: `Disbursed${a.disbursed_at ? ` (seen ${when(a.disbursed_at)})` : ""}.`,
+      declined: "Declined. Its guarantors have been released.", withdrawn: "Withdrawn. Its guarantors have been released." };
+    panel.append(h("p", null, text[a.status] || a.status));
+  }
+  panel.append(slot);
+  return panel;
+}
+
+function withdrawButton(a, slot) {
+  const btn = h("button", { type: "button", class: "danger" }, "Withdraw");
+  btn.addEventListener("click", async () => {
+    const why = h("input", { type: "text", required: true, minlength: "3", placeholder: "e.g. member changed their mind" });
+    const ok = await confirmDialog("Withdraw this application?", h("div", { class: "stack" },
+      h("p", null, "It stops here and any guarantors are released."), h("label", null, "Why (recorded)", why)), "Withdraw", { danger: true });
+    if (!ok) return;
+    if (why.value.trim().length < 3) { slot.replaceChildren(note("err", "Give a short reason to withdraw.")); return; }
+    busy(btn, slot, async () => {
+      await api(`${inst()}/loan-applications/${a.id}/withdraw`, { method: "POST", params: { note: why.value.trim() } }); route();
+    });
+  });
+  return btn;
+}
+
+function decisionForm(a, slot) {
+  const passes = a.appraisal_outcome === "passes";
+  const noteIn = h("textarea", { maxlength: "1000", placeholder: "Committee notes (recorded)" });
+  const override = h("textarea", { maxlength: "1000", placeholder: "Why approve although a check failed or is unknown (at least 10 characters)" });
+  const approve = h("button", { type: "button", class: "primary" }, "Approve");
+  const decline = h("button", { type: "button", class: "danger" }, "Decline");
+  const send = (decision) => busy(decision === "approve" ? approve : decline, slot, async () => {
+    const body = { decision, note: noteIn.value.trim() || null };
+    if (decision === "approve" && !passes) body.override_reason = override.value.trim();
+    await api(`${inst()}/loan-applications/${a.id}/decide`, { method: "POST", body });
+    route();
+  });
+  approve.addEventListener("click", async () => {
+    const ok = await confirmDialog(`Approve ${kes(a.amount_kes)} for ${a.member}?`,
+      h("p", null, passes ? "The appraisal passes every check." : "The appraisal does not pass. Your override reason will be recorded and the loan flagged as approved with exceptions."), "Approve");
+    if (ok) send("approve");
+  });
+  decline.addEventListener("click", async () => {
+    const ok = await confirmDialog("Decline this application?", h("p", null, "One decline ends it, and its guarantors are released."), "Decline", { danger: true });
+    if (ok) send("decline");
+  });
+  return h("div", { class: "stack" },
+    h("label", null, "Notes", noteIn),
+    passes ? null : h("label", null, "Override reason (needed to approve)", override),
+    h("div", { class: "actions" }, approve, decline));
+}
+
+function historyPanel(a) {
+  const rows = [["Created", a.created_at], ["Submitted", a.submitted_at], ["Decided", a.decided_at], ["Sent to core", a.exported_at], ["Disbursed", a.disbursed_at]]
+    .filter(([, t]) => t).map(([k, t]) => h("li", null, `${k}: ${when(t)}`));
+  return h("section", { class: "panel pad stack" }, h("h2", null, "History"),
+    h("ul", { class: "small" }, rows),
+    a.decisions.length ? h("ul", { class: "small" }, a.decisions.map((d) =>
+      h("li", null, `${d.decision === "approve" ? "Approved" : "Declined"} ${when(d.at)} (appraisal: ${d.appraisal_outcome})${d.note ? `: ${d.note}` : ""}`))) : null,
+    h("p", { class: "muted small" }, "Every step is in the audit log."));
+}
+
+// ------------------------------------------------------------------ loan products
+
+async function viewProducts(id) {
+  const products = await api(`${inst()}/loan-products`);
+  const editable = can("loan_products");
+  const list = h("section", { class: "panel" }, products.length === 0 ? h("div", { class: "empty" }, "No loan products yet.") :
+    h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Code"), h("th", null, "Name"), h("th", { class: "n" }, "Max amount"), h("th", { class: "n" }, "Max months"),
+        h("th", { class: "n" }, "Rate"), h("th", { class: "n" }, "Deposits ×"), h("th", null, "Guarantors"), h("th", null, ""))),
+      h("tbody", null, products.map((p) => h("tr", null, h("td", { class: "num" }, p.code), h("td", null, p.name, p.active ? "" : h("span", { class: "muted small" }, " (inactive)")),
+        h("td", { class: "n" }, kes(p.max_amount_kes)), h("td", { class: "n" }, p.max_term_months), h("td", { class: "n" }, `${p.interest_rate_pct}%`),
+        h("td", { class: "n" }, p.deposits_multiplier || "off"), h("td", null, { above_deposits: "Above deposits", full: "Full amount", none: "None" }[p.guarantor_cover]),
+        h("td", null, editable ? h("a", { href: `#/products/${p.id}` }, "Edit") : null)))))));
+  const current = id ? products.find((p) => p.id === Number(id)) : null;
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Loan products"),
+      h("p", { class: "muted" }, "Each product carries the rules its applications are appraised against."))),
+    h("div", { class: "grid2" }, list, editable ? productForm(current) : null),
+  ];
+}
+
+function productForm(p) {
+  const d = p || { code: "", name: "", active: true, min_amount_kes: 1000, max_amount_kes: "", max_term_months: 36, interest_rate_pct: 12,
+    interest_method: "reducing", deposits_multiplier: 3, min_membership_months: 6, max_arrears_days: 30, one_third_rule: true,
+    guarantor_cover: "above_deposits", min_guarantors: 0, second_approval_above_kes: null };
+  const f = {
+    code: h("input", { type: "text", required: true, maxlength: "20", value: d.code }),
+    name: h("input", { type: "text", required: true, maxlength: "100", value: d.name }),
+    min_amount_kes: h("input", { type: "number", min: "1", step: "0.01", required: true, value: String(d.min_amount_kes) }),
+    max_amount_kes: h("input", { type: "number", min: "1", step: "0.01", required: true, value: String(d.max_amount_kes) }),
+    max_term_months: h("input", { type: "number", min: "1", max: "240", required: true, value: String(d.max_term_months) }),
+    interest_rate_pct: h("input", { type: "number", min: "0", max: "100", step: "0.01", required: true, value: String(d.interest_rate_pct) }),
+    interest_method: h("select", null, h("option", { value: "reducing" }, "Reducing balance"), h("option", { value: "flat" }, "Flat rate")),
+    deposits_multiplier: h("input", { type: "number", min: "0", max: "20", step: "0.01", value: String(d.deposits_multiplier) }),
+    min_membership_months: h("input", { type: "number", min: "0", max: "120", value: String(d.min_membership_months) }),
+    max_arrears_days: h("input", { type: "number", min: "0", max: "365", value: String(d.max_arrears_days) }),
+    guarantor_cover: h("select", null, h("option", { value: "above_deposits" }, "Amount above own deposits"), h("option", { value: "full" }, "Full amount"), h("option", { value: "none" }, "None")),
+    min_guarantors: h("input", { type: "number", min: "0", max: "10", value: String(d.min_guarantors) }),
+    second_approval_above_kes: h("input", { type: "number", min: "1", step: "0.01", value: d.second_approval_above_kes === null ? "" : String(d.second_approval_above_kes), placeholder: "Leave empty for one approver" }),
+  };
+  f.interest_method.value = d.interest_method; f.guarantor_cover.value = d.guarantor_cover;
+  const oneThird = h("input", { type: "checkbox", checked: d.one_third_rule ? true : null });
+  const active = h("input", { type: "checkbox", checked: d.active ? true : null });
+  const slot = h("div");
+  const save = h("button", { type: "submit", class: "primary" }, p ? "Save changes" : "Create product");
+  const L = (label, el) => h("label", null, label, el);
+  return h("form", { class: "panel pad stack", onsubmit: (e) => {
+    e.preventDefault();
+    busy(save, slot, async () => {
+      const body = { code: f.code.value.trim(), name: f.name.value.trim(), active: active.checked,
+        min_amount_kes: f.min_amount_kes.value, max_amount_kes: f.max_amount_kes.value, max_term_months: Number(f.max_term_months.value),
+        interest_rate_pct: f.interest_rate_pct.value, interest_method: f.interest_method.value,
+        deposits_multiplier: f.deposits_multiplier.value || 0, min_membership_months: Number(f.min_membership_months.value || 0),
+        max_arrears_days: Number(f.max_arrears_days.value || 0), one_third_rule: oneThird.checked, guarantor_cover: f.guarantor_cover.value,
+        min_guarantors: Number(f.min_guarantors.value || 0), second_approval_above_kes: f.second_approval_above_kes.value || null };
+      await api(`${inst()}/loan-products${p ? `/${p.id}` : ""}`, { method: p ? "PUT" : "POST", body });
+      location.hash = "#/products"; route();
+    });
+  } },
+    h("h2", null, p ? `Edit ${p.code}` : "New product"),
+    h("div", { class: "row-form" }, L("Code", f.code), L("Name", f.name)),
+    h("div", { class: "row-form" }, L("Min amount (KES)", f.min_amount_kes), L("Max amount (KES)", f.max_amount_kes)),
+    h("div", { class: "row-form" }, L("Max months", f.max_term_months), L("Rate % a year", f.interest_rate_pct), L("Method", f.interest_method)),
+    h("p", { class: "muted small" }, "The rate only estimates the instalment for the affordability check. The core system's schedule is the real one."),
+    h("div", { class: "row-form" }, L("Deposits multiplier (0 = off)", f.deposits_multiplier), L("Months of membership", f.min_membership_months), L("Max days in arrears", f.max_arrears_days)),
+    h("label", { class: "check" }, oneThird, "One-third take-home rule"),
+    h("div", { class: "row-form" }, L("Guarantor cover", f.guarantor_cover), L("Minimum guarantors", f.min_guarantors)),
+    L("Two approvers above (KES)", f.second_approval_above_kes),
+    h("label", { class: "check" }, active, "Active (new applications can use it)"),
+    slot, h("div", { class: "actions" }, p ? h("a", { href: "#/products", class: "btn" }, "Cancel") : null, save));
 }
 
 // ------------------------------------------------------------------ go

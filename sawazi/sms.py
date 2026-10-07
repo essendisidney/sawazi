@@ -59,6 +59,8 @@ class SimulatedProvider:
 
     def send(self, phone: str, text: str, service_name: str | None) -> SendResult:
         self.sent.append((phone, text, service_name))
+        # Local development only: show what would have gone out (e.g. a guarantor link) in the server log.
+        print(f"[simulated SMS to {phone}] {text}", flush=True)
         return SendResult("simulated", f"sim-{uuid.uuid4().hex}", None, "Simulated: nothing was sent")
 
 

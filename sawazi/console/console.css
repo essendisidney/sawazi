@@ -176,3 +176,15 @@ dialog { border: 1px solid var(--line); border-radius: 12px; padding: 0; width: 
 dialog::backdrop { background: rgb(0 0 0 / 0.45); }
 .dlg { padding: 20px; display: grid; gap: 14px; }
 .dlg .actions { justify-content: flex-end; }
+
+/* ---------- loans */
+.checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.ck { display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: start; font-size: 0.88rem; padding: 6px 8px; border-radius: 8px; background: var(--bg); }
+.ck-mark { font-weight: 700; text-align: center; border-radius: 99px; line-height: 22px; height: 22px; font-size: 0.8rem; }
+.ck-pass .ck-mark { background: var(--accent-soft); color: var(--good); }
+.ck-fail .ck-mark { background: var(--bad-soft); color: var(--bad); }
+.ck-warn .ck-mark, .ck-unknown .ck-mark, .ck-pending .ck-mark { background: var(--warn-soft); color: var(--warn); }
+.out-passes, .app-approved, .app-disbursed, .gs-accepted { background: var(--accent-soft); color: var(--good); }
+.out-fails, .app-declined, .gs-declined { background: var(--bad-soft); color: var(--bad); }
+.out-incomplete, .app-submitted, .gs-requested { background: var(--warn-soft); color: var(--warn); }
+.app-exported { background: var(--info-soft); }

@@ -1,4 +1,5 @@
 """Simultaneous requests must never allocate the same money twice. Needs real PostgreSQL (separate connections)."""
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
@@ -55,3 +56,48 @@ def test_same_callback_delivered_several_times_at_once(seeded):
         assert s.scalar(select(func.count()).where(Transaction.reference == "TJ1")) == 1
         assert s.scalar(select(func.sum(Allocation.amount_cents))) == 300_000  # allocated once
         assert s.get(Loan, 10).arrears_cents == 0
+
+
+def test_two_acceptances_at_once_cannot_overcommit_a_guarantor(env, monkeypatch):
+    """G1 has KES 300,000 of deposits and is asked for KES 200,000 on two loans; both accept at the same moment."""
+    from sawazi import sms
+    from sawazi.api import app
+    from tests.test_guarantors import PRODUCT, Phone
+
+    c, Session = env
+    monkeypatch.setenv("SAWAZI_PUBLIC_URL", "https://sawazi.test")
+    phone = Phone()
+    app.dependency_overrides[sms.get_provider] = lambda: phone
+    with Session() as s:
+        s.add_all([Member(id=10, institution_id=1, member_no="A1", name="A One", phone="254711000010"),
+                   Member(id=11, institution_id=1, member_no="A2", name="A Two", phone="254711000011"),
+                   Member(id=12, institution_id=1, member_no="G1", name="G One", phone="254711000012",
+                          deposits_cents=30_000_000)])
+        s.commit()
+    pid = c.post("/institutions/1/loan-products", headers=login(c, "admin@a.test"), json=PRODUCT).json()["id"]
+    officer = login(c, "credit_officer@a.test")
+    tokens, pins = [], []
+    for applicant in ("A1", "A2"):
+        a = c.post("/institutions/1/loan-applications", headers=officer,
+                   json={"member_no": applicant, "product_id": pid, "amount_kes": 300_000, "term_months": 48}).json()
+        c.post(f"/institutions/1/loan-applications/{a['id']}/guarantors", headers=officer,
+               json={"member_no": "G1", "amount_kes": 200_000})
+        tokens.append(phone.link())
+        c.post(f"/g/{tokens[-1]}/pin")
+        pins.append(phone.pin())
+    from sawazi import guarantors
+    real = guarantors.free_capacity
+
+    def slow_capacity(s, m):  # widen the race window so both acceptances overlap for certain
+        free = real(s, m)
+        time.sleep(0.4)
+        return free
+    monkeypatch.setattr(guarantors, "free_capacity", slow_capacity)
+    with ThreadPoolExecutor(2) as pool:
+        pages = list(pool.map(lambda tp: c.post(f"/g/{tp[0]}/accept", data={"pin": tp[1]}).text, zip(tokens, pins)))
+    app.dependency_overrides.pop(sms.get_provider, None)
+    assert sum("You accepted" in p for p in pages) == 1
+    assert sum("no longer cover" in p for p in pages) == 1
+    from sawazi.models import Guarantee
+    with Session() as s:
+        assert sorted(s.scalars(select(Guarantee.status))) == ["accepted", "requested"]

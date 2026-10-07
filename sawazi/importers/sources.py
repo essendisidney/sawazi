@@ -9,12 +9,13 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import CheckoffRemittance, CheckoffSchedule, ExceptionItem, Loan, Member, MpesaCallback, Transaction
+from ..models import (CheckoffRemittance, CheckoffSchedule, ExceptionItem, Loan, LoanApplication, Member,
+                      MpesaCallback, Transaction)
 from .common import (
     norm_phone,
     pick,
@@ -28,6 +29,7 @@ from .common import (
 @dataclass
 class ImportResult:
     created: int = 0
+    updated: int = 0  # member balances: existing members whose figures changed
     skipped_duplicates: int = 0
     rejected: list[str] = field(default_factory=list)
     callbacks_confirmed: int = 0  # M-Pesa only: real-time payments now seen on the statement
@@ -40,6 +42,8 @@ class ImportResult:
             "rejected": self.rejected[:50],
             "rejected_count": len(self.rejected),
         }
+        if self.updated:
+            out["updated"] = self.updated
         if self.callbacks_confirmed or self.callbacks_mismatched:
             out |= {"callbacks_confirmed": self.callbacks_confirmed, "callbacks_mismatched": self.callbacks_mismatched}
         return out
@@ -72,6 +76,87 @@ def import_members(s: Session, institution_id: int, content) -> ImportResult:
         m.phone = norm_phone(pick(row, "phone", "mobile", "phone_number", "telephone")) or m.phone
         m.id_number = pick(row, "id_number", "id_no", "national_id") or m.id_number
         m.employer = pick(row, "employer", "employer_name", "station") or m.employer
+        _apply_member_figures(m, row, i, res)
+    s.commit()
+    return res
+
+
+# Optional member figures. A blank cell means "not supplied": it never overwrites a known figure.
+_FIGURES = {
+    "deposits_cents": ("deposits", "deposit_balance", "total_deposits", "bosa_deposits", "savings"),
+    "shares_cents": ("share_capital", "shares", "share_balance"),
+    "gross_pay_cents": ("gross_pay", "gross_salary", "gross"),
+    "net_pay_cents": ("net_pay", "net_salary", "take_home", "net"),
+}
+_JOINED = ("date_joined", "joined_on", "joined", "registration_date", "date_registered", "membership_date")
+_BAL_AS_OF = ("balances_as_at", "balance_date", "as_at", "as_of")
+_PAY_AS_OF = ("pay_date", "payroll_date", "pay_period_end")
+
+
+def _apply_member_figures(m: Member, row: dict, i: int, res: ImportResult) -> bool:
+    """Set the figures this row actually gives. A blank cell (or a missing column) changes nothing.
+    Returns True if anything was set."""
+    set_balance = set_pay = touched = False
+    for field, names in _FIGURES.items():
+        raw = pick(row, *names)
+        if not raw:
+            continue
+        cents = to_cents(raw)
+        if cents < 0:
+            res.rejected.append(f"row {i}: {m.member_no} negative {field.removesuffix('_cents').replace('_', ' ')} ignored")
+            continue
+        setattr(m, field, cents)
+        touched = True
+        set_balance |= field in ("deposits_cents", "shares_cents")
+        set_pay |= field in ("gross_pay_cents", "net_pay_cents")
+    raw = pick(row, *_JOINED)
+    if raw:
+        joined = to_date(raw)
+        if joined is None:
+            res.rejected.append(f"row {i}: {m.member_no} unreadable join date '{raw}'")
+        else:
+            m.joined_on, touched = joined, True
+    if m.gross_pay_cents is not None and m.net_pay_cents is not None and m.net_pay_cents > m.gross_pay_cents:
+        res.rejected.append(f"row {i}: {m.member_no} net pay is more than gross pay; pay figures cleared")
+        m.gross_pay_cents = m.net_pay_cents = None
+        set_pay = False
+    as_of = to_date(pick(row, *_BAL_AS_OF)) or date.today()
+    if set_balance:
+        m.balances_as_of = as_of
+    if set_pay:
+        m.pay_as_of = to_date(pick(row, *_PAY_AS_OF)) or as_of
+    return touched
+
+
+def _link_disbursed(s: Session, institution_id: int, new_loans: list[Loan]) -> None:
+    """A loan Sawazi handed to the core system comes back in the loans export once disbursed. Link it only when
+    there is exactly one exported application for that member and amount: never guess between two."""
+    if not new_loans:
+        return
+    waiting = list(s.scalars(select(LoanApplication).where(LoanApplication.institution_id == institution_id,
+                                                           LoanApplication.status == "exported")))
+    for ln in new_loans:
+        same = [a for a in waiting if a.member_id == ln.member_id and a.amount_cents == ln.principal_cents]
+        if len(same) == 1:
+            a = same[0]
+            a.status, a.disbursed_loan_id = "disbursed", ln.id
+            a.disbursed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            waiting.remove(a)
+
+
+def import_member_balances(s: Session, institution_id: int, content) -> ImportResult:
+    """Monthly balances (deposits, shares) or payroll figures (gross, net pay) for existing members.
+    Never creates members; unknown member numbers are listed."""
+    res = ImportResult()
+    members = {m.member_no: m for m in s.scalars(select(Member).where(Member.institution_id == institution_id))}
+    for i, row in enumerate(read_rows(content), start=2):
+        member_no = pick(row, "member_no", "member_number", "memberno", "no", "member_id")
+        m = members.get(member_no)
+        if m is None:
+            res.rejected.append(f"row {i}: unknown member '{member_no}'")
+            continue
+        if _apply_member_figures(m, row, i, res):
+            res.updated += 1
     s.commit()
     return res
 
@@ -86,6 +171,7 @@ def import_loans(s: Session, institution_id: int, content) -> ImportResult:
         ln.loan_no: ln
         for ln in s.scalars(select(Loan).where(Loan.institution_id == institution_id))
     }
+    new_loans: list[Loan] = []
     for i, row in enumerate(read_rows(content), start=2):
         loan_no = pick(row, "loan_no", "loan_number", "loan_id", "account_no")
         member_no = pick(row, "member_no", "member_number", "memberno")
@@ -104,6 +190,7 @@ def import_loans(s: Session, institution_id: int, content) -> ImportResult:
             )
             s.add(ln)
             existing[loan_no] = ln
+            new_loans.append(ln)
             res.created += 1
         else:
             res.skipped_duplicates += 1
@@ -129,6 +216,8 @@ def import_loans(s: Session, institution_id: int, content) -> ImportResult:
         via = pick(row, "repays_via", "repayment_mode", "mode").lower()
         ln.repays_via = "checkoff" if "check" in via else ("bank" if "bank" in via else "mpesa")
         ln.status = "closed" if ln.balance_cents <= 0 else "active"
+    s.flush()
+    _link_disbursed(s, institution_id, new_loans)
     s.commit()
     return res
 

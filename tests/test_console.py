@@ -40,7 +40,7 @@ def test_me_lists_permissions_and_institution(env):
     viewer = c.get("/auth/me", headers=login(c, "viewer@a.test")).json()
     assert viewer["institution_name"] == "SACCO A" and viewer["permissions"] == ["read"]
     officer = c.get("/auth/me", headers=login(c, "credit_officer@a.test")).json()
-    assert set(officer["permissions"]) == {"read", "collections", "send_sms"}
+    assert set(officer["permissions"]) == {"read", "collections", "send_sms", "loan_apply"}
     admin = c.get("/auth/me", headers=login(c, "admin@a.test")).json()
     assert {"manage_users", "resolve", "audit", "sms_settings"} <= set(admin["permissions"])
 
@@ -103,3 +103,16 @@ def test_reminders_say_which_can_be_texted(env):
     assert rows[10]["status"] == "queued"
     assert c.get("/institutions/1/reminders", headers=h, params={"status": "failed"}).json() == []
     assert c.get("/institutions/1/reminders", headers=h, params={"status": "sent"}).status_code == 422
+
+
+def test_console_script_parses():
+    """A syntax error blanks the whole console; catch it here (needs Node.js, skipped without it)."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        import pytest
+        pytest.skip("Node.js not installed")
+    r = subprocess.run([node, "--check", str(CONSOLE / "console.js")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr

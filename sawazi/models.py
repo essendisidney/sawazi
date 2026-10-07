@@ -48,6 +48,14 @@ class Member(Base):
     phone: Mapped[str | None] = mapped_column(String(20), index=True)
     id_number: Mapped[str | None] = mapped_column(String(20), index=True)
     employer: Mapped[str | None] = mapped_column(String(200))
+    # From the core system / payroll. None means "not supplied": never treat unknown as zero.
+    joined_on: Mapped[date | None] = mapped_column(Date)
+    deposits_cents: Mapped[int | None] = mapped_column(BigInteger)
+    shares_cents: Mapped[int | None] = mapped_column(BigInteger)
+    balances_as_of: Mapped[date | None] = mapped_column(Date)
+    gross_pay_cents: Mapped[int | None] = mapped_column(BigInteger)  # monthly, from payslip / payroll
+    net_pay_cents: Mapped[int | None] = mapped_column(BigInteger)  # monthly take-home after all deductions
+    pay_as_of: Mapped[date | None] = mapped_column(Date)
 
     loans: Mapped[list[Loan]] = relationship(back_populates="member")
 
@@ -240,7 +248,7 @@ class AuditEvent(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
     at: Mapped[datetime] = mapped_column(DateTime, index=True)
-    actor_kind: Mapped[str] = mapped_column(String(20))  # user | api_key | platform | anonymous | provider
+    actor_kind: Mapped[str] = mapped_column(String(20))  # user | api_key | platform | anonymous | provider | member
     actor_id: Mapped[int | None] = mapped_column(Integer)
     actor_name: Mapped[str] = mapped_column(String(200))  # snapshot, so renames don't rewrite history
     action: Mapped[str] = mapped_column(String(60), index=True)  # e.g. suspense.clear, user.update
@@ -335,3 +343,101 @@ class AllocationRules(Base):
     excess: Mapped[list] = mapped_column(JSON)  # [{"target", "percent", "max_cents"}], last takes the rest
     updated_at: Mapped[datetime] = mapped_column(DateTime)
     updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("staff_users.id"))
+
+
+class LoanProduct(Base):
+    """A loan product and the appraisal rules that go with it. Sawazi only appraises; the core system lends."""
+
+    __tablename__ = "loan_products"
+    __table_args__ = (UniqueConstraint("institution_id", "code"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    code: Mapped[str] = mapped_column(String(20))  # as in the core system, e.g. DEV, EMG
+    name: Mapped[str] = mapped_column(String(100))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    min_amount_cents: Mapped[int] = mapped_column(BigInteger)
+    max_amount_cents: Mapped[int] = mapped_column(BigInteger)
+    max_term_months: Mapped[int] = mapped_column(Integer)
+    # Only to estimate the instalment for affordability. The real schedule is the core system's.
+    interest_rate_bps: Mapped[int] = mapped_column(Integer)  # yearly, basis points: 1200 = 12% a year
+    interest_method: Mapped[str] = mapped_column(String(10))  # reducing | flat
+    deposits_multiplier_pct: Mapped[int] = mapped_column(Integer)  # 300 = 3x deposits; 0 = not checked
+    min_membership_months: Mapped[int] = mapped_column(Integer)
+    max_arrears_days: Mapped[int] = mapped_column(Integer)  # existing loans further behind block the application
+    one_third_rule: Mapped[bool] = mapped_column(Boolean)
+    guarantor_cover: Mapped[str] = mapped_column(String(20))  # above_deposits | full | none
+    min_guarantors: Mapped[int] = mapped_column(Integer)
+    second_approval_above_cents: Mapped[int | None] = mapped_column(BigInteger)  # two approvers above this
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class LoanApplication(Base):
+    """A loan request from capture to hand-over. Sawazi appraises and records decisions; the core system lends.
+    draft -> submitted -> approved | declined | withdrawn; approved -> exported (to the core) -> disbursed."""
+
+    __tablename__ = "loan_applications"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id"), index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("loan_products.id"))
+    amount_cents: Mapped[int] = mapped_column(BigInteger)
+    term_months: Mapped[int] = mapped_column(Integer)
+    purpose: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    appraisal: Mapped[dict | None] = mapped_column(JSON)  # snapshot at submission / latest decision
+    appraisal_outcome: Mapped[str | None] = mapped_column(String(20))  # passes | fails | incomplete
+    approvals_needed: Mapped[int] = mapped_column(Integer, default=1)
+    override_reason: Mapped[str | None] = mapped_column(Text)  # set when approved despite failed/unknown checks
+    prepared_by_user_id: Mapped[int] = mapped_column(ForeignKey("staff_users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    exported_at: Mapped[datetime | None] = mapped_column(DateTime)
+    disbursed_loan_id: Mapped[int | None] = mapped_column(ForeignKey("loans.id"))
+    disbursed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class LoanDecision(Base):
+    """One approver's decision on an application. An approver never decides on their own application."""
+
+    __tablename__ = "loan_decisions"
+    __table_args__ = (UniqueConstraint("application_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    application_id: Mapped[int] = mapped_column(ForeignKey("loan_applications.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("staff_users.id"))
+    decision: Mapped[str] = mapped_column(String(10))  # approve | decline
+    note: Mapped[str | None] = mapped_column(Text)
+    appraisal_outcome: Mapped[str] = mapped_column(String(20))  # what the approver saw
+    at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class Guarantee(Base):
+    """A member asked to guarantee part of another member's loan, and their answer.
+    Consent comes from the guarantor's own phone: a one-time link by SMS, and a PIN by SMS to accept.
+    Only hashes of the link token and PIN are stored."""
+
+    __tablename__ = "guarantees"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    application_id: Mapped[int] = mapped_column(ForeignKey("loan_applications.id"), index=True)
+    guarantor_member_id: Mapped[int] = mapped_column(ForeignKey("members.id"), index=True)
+    amount_cents: Mapped[int] = mapped_column(BigInteger)
+    # requested -> accepted | declined | expired | cancelled; accepted -> released (application withdrawn/declined)
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    phone: Mapped[str] = mapped_column(String(20))  # where the request and PIN went
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    pin_hash: Mapped[str | None] = mapped_column(String(64))
+    pin_expires_at: Mapped[datetime | None] = mapped_column(DateTime)
+    pin_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    pins_sent: Mapped[int] = mapped_column(Integer, default=0)
+    requested_by_user_id: Mapped[int] = mapped_column(ForeignKey("staff_users.id"))
+    requested_at: Mapped[datetime] = mapped_column(DateTime)
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime)
+    response_ip: Mapped[str | None] = mapped_column(String(45))

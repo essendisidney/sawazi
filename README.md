@@ -29,7 +29,7 @@ It sits beside any core banking system and works from the CSV/Excel exports ever
 pip install -r requirements.txt
 python scripts/make_sample_data.py      # fictional test data
 python scripts/run_demo.py              # full pipeline -> demo_output.json
-python -m pytest -q                     # 149 tests
+python -m pytest -q                     # 210 tests
 uvicorn sawazi.api:app --reload          # API at http://localhost:8000/docs
 ```
 
@@ -85,6 +85,29 @@ python scripts/console_demo.py      # http://localhost:8765/console/ (logins pri
 
 The console shows uploaded data only as text, loads scripts only from its own files, and is served with a strict
 Content-Security-Policy. Login tokens are kept for the browser tab only (`sessionStorage`).
+
+## Loans and guarantors (Phase 2)
+
+Sawazi never lends. It takes in an application, appraises it, collects guarantor consent and records a human
+decision; the core system disburses from the hand-over file, and the loan comes back through the loans upload.
+
+1. **Member figures.** The members export (or the "member balances" upload, monthly or from payroll) supplies
+   date joined, deposits, share capital, gross and net pay. Unknown is never treated as zero.
+2. **Loan products** (admin): limits, rate and method (only to estimate the instalment), deposits multiplier
+   (default 3x), months of membership (6), arrears limit (30 days), one-third take-home rule, guarantor cover
+   (the amount above the member's own deposits), minimum guarantors, and an amount above which two approvers are needed.
+3. **Appraisal** checks each rule and says why in plain words, with the largest amount the member qualifies for.
+   A figure Sawazi does not have makes the check "unknown", never a pass. Appraisal never approves.
+4. **Guarantors** are asked by SMS with a one-time link (7 days) to a simple page; accepting needs a PIN sent to
+   their phone on file. Free capacity (deposits less what they already guarantee) is checked when asked and again,
+   under a lock, when they accept. Set `SAWAZI_PUBLIC_URL` to the https address members open links on.
+5. **Approval** by the new `approver` role, never by the person who prepared the application; two approvers above
+   the product's threshold; one decline ends it. Approving despite a failed or unknown check needs a written reason
+   and is flagged "approved with exceptions".
+6. **Hand-over.** Accountants download approved loans for the core system (each loan once). When the disbursed loan
+   appears in the next loans upload with the same member and amount, and only one application matches, it is linked.
+
+All of it is in the console (Loans, Products) and the audit log.
 
 ## Allocation rules
 
@@ -211,6 +234,14 @@ curl -X POST localhost:8000/institutions/1/admin -H "X-API-Key: $SAWAZI_API_KEY"
 | GET/POST | `/institutions/{id}/api-keys` | List / create institution API keys (admin; full key shown once) |
 | DELETE | `/institutions/{id}/api-keys/{key_id}` | Revoke an API key (admin) |
 | GET | `/institutions/{id}/audit` | Audit log of every manual action, newest first (admin) |
+| GET/POST/PUT | `/institutions/{id}/loan-products` | Loan products and their appraisal rules (admin changes) |
+| POST | `/institutions/{id}/appraisal/what-if` | Appraise a possible loan for a member, saving nothing |
+| POST/GET | `/institutions/{id}/loan-applications` | Create (draft) / list applications |
+| PATCH, POST `submit`, `withdraw` | `/institutions/{id}/loan-applications/{app}` | Edit a draft, submit for decision, withdraw |
+| POST | `/institutions/{id}/loan-applications/{app}/decide` | Approver's decision (approve needs `override_reason` if the appraisal does not pass) |
+| POST | `/institutions/{id}/loan-applications/export.csv` | Approved loans for the core system to disburse |
+| POST/GET | `/institutions/{id}/loan-applications/{app}/guarantors` | Ask a guarantor by SMS / list answers |
+| GET | `/institutions/{id}/members/{member_no}/guarantor-exposure` | What a member guarantees and can still guarantee |
 | GET/PUT | `/institutions/{id}/allocation-rules` | How payments are split (admin changes) |
 | POST | `/institutions/{id}/allocation-rules/preview` | Show how a member's payment would be split, changing nothing |
 | GET | `/institutions/{id}/members?q=` | Find a member by number, name, phone or ID number, with active loans |
@@ -238,6 +269,8 @@ sawazi/
   auth.py              staff login, roles, institution scoping, API keys
   audit.py             append-only audit log of every manual action
   sms.py               SMS providers: Taifa Mobile client, simulator
+  guarantors.py        guarantor capacity, one-time links, PINs, consent page
+  engine/appraisal.py  loan appraisal rules (pure)
   daraja.py            M-Pesa Daraja C2B callback parsing, URL registration
   console/             staff web console (static HTML/CSS/JS served at /console/)
   importers/           CSV parsing for every source
@@ -253,6 +286,6 @@ tests/                 pytest suite
 
 ## Next
 
-Phase 1 is complete. Phase 2: loan factory (digital applications, appraisal) and the digital guarantor network.
+Phase 2 in progress: loan factory and SMS guarantor consent are built. Next: USSD guarantor consent (needs a USSD shortcode from Taifa Mobile).
 
 Before any real member data: ODPC registration and a data processing agreement with each pilot institution.

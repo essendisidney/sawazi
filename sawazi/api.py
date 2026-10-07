@@ -10,6 +10,7 @@ import hmac
 import io
 import logging
 import os
+import secrets
 import threading
 from collections import defaultdict
 from contextlib import asynccontextmanager, contextmanager
@@ -18,24 +19,24 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import audit, auth, daraja, sms
+from . import audit, auth, daraja, guarantors, sms
 from .auth import API_KEY_ROLES, PERMISSIONS, ROLES, Principal, require
 from .db import get_session, init_db
 from .engine.checkoff import reconcile_checkoff
 from .engine.collections import build_queue, portfolio_at_risk
-from .engine import allocation
+from .engine import allocation, appraisal
 from .engine.matching import allocate, run_matching
 from .importers import sources
 from .importers.common import norm_phone
-from .models import (Allocation, AllocationRules, ApiKey, AuditEvent, ExceptionItem, Institution, Loan, Member, MpesaCallback,
+from .models import (Allocation, AllocationRules, ApiKey, Guarantee, LoanApplication, LoanDecision, LoanProduct, AuditEvent, ExceptionItem, Institution, Loan, Member, MpesaCallback,
                      Reminder, SmsMessage, SmsOptOut, SmsSettings, StaffSession, StaffUser, Transaction)
 
 @asynccontextmanager
@@ -289,6 +290,7 @@ IMPORTERS = {
     "loans": sources.import_loans,
     "mpesa": sources.import_mpesa_statement,
     "bank": sources.import_bank_statement,
+    "member_balances": sources.import_member_balances,
 }
 
 
@@ -538,7 +540,7 @@ def audit_log(
     action: str | None = Query(None, description="exact action, or a prefix ending in '.', e.g. 'user.'"),
     entity_type: str | None = None,
     entity_id: int | None = None,
-    actor_kind: str | None = Query(None, pattern="^(user|api_key|platform|anonymous|provider)$"),
+    actor_kind: str | None = Query(None, pattern="^(user|api_key|platform|anonymous|provider|member)$"),
     actor_id: int | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
@@ -1057,6 +1059,638 @@ def preview_allocation(institution_id: int, body: PreviewIn, s: Session = Depend
     }
 
 
+# ---------------------------------------------------------------- loan products and appraisal
+
+def _cents(kes: Decimal) -> int:
+    return int(kes * 100)
+
+
+class ProductIn(BaseModel):
+    code: str = Field(min_length=1, max_length=20, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=100)
+    active: bool = True
+    min_amount_kes: Decimal = Field(default=Decimal(1000), gt=0, max_digits=14, decimal_places=2)
+    max_amount_kes: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    max_term_months: int = Field(ge=1, le=240)
+    interest_rate_pct: Decimal = Field(ge=0, le=100, max_digits=5, decimal_places=2,
+                                       description="yearly; only used to estimate the instalment")
+    interest_method: str = Field(default="reducing", pattern="^(reducing|flat)$")
+    deposits_multiplier: Decimal = Field(default=Decimal(3), ge=0, le=20, max_digits=4, decimal_places=2,
+                                         description="0 switches the check off")
+    min_membership_months: int = Field(default=6, ge=0, le=120)
+    max_arrears_days: int = Field(default=30, ge=0, le=365)
+    one_third_rule: bool = True
+    guarantor_cover: str = Field(default="above_deposits", pattern="^(above_deposits|full|none)$")
+    min_guarantors: int = Field(default=0, ge=0, le=10)
+    second_approval_above_kes: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
+
+    def apply(self, prod: LoanProduct) -> None:
+        if self.min_amount_kes > self.max_amount_kes:
+            raise HTTPException(422, "minimum amount is more than the maximum")
+        prod.code, prod.name, prod.active = self.code.upper(), self.name, self.active
+        prod.min_amount_cents, prod.max_amount_cents = _cents(self.min_amount_kes), _cents(self.max_amount_kes)
+        prod.max_term_months, prod.interest_method = self.max_term_months, self.interest_method
+        prod.interest_rate_bps = int(self.interest_rate_pct * 100)
+        prod.deposits_multiplier_pct = int(self.deposits_multiplier * 100)
+        prod.min_membership_months, prod.max_arrears_days = self.min_membership_months, self.max_arrears_days
+        prod.one_third_rule, prod.guarantor_cover = self.one_third_rule, self.guarantor_cover
+        prod.min_guarantors = self.min_guarantors
+        prod.second_approval_above_cents = (_cents(self.second_approval_above_kes)
+                                            if self.second_approval_above_kes is not None else None)
+
+
+def _product_out(p: LoanProduct) -> dict:
+    return {"id": p.id, "code": p.code, "name": p.name, "active": p.active,
+            "min_amount_kes": p.min_amount_cents / 100, "max_amount_kes": p.max_amount_cents / 100,
+            "max_term_months": p.max_term_months, "interest_rate_pct": p.interest_rate_bps / 100,
+            "interest_method": p.interest_method, "deposits_multiplier": p.deposits_multiplier_pct / 100,
+            "min_membership_months": p.min_membership_months, "max_arrears_days": p.max_arrears_days,
+            "one_third_rule": p.one_third_rule, "guarantor_cover": p.guarantor_cover,
+            "min_guarantors": p.min_guarantors,
+            "second_approval_above_kes": (p.second_approval_above_cents / 100
+                                          if p.second_approval_above_cents is not None else None)}
+
+
+def _product_rules(p: LoanProduct) -> appraisal.Product:
+    return appraisal.Product(p.min_amount_cents, p.max_amount_cents, p.max_term_months, p.interest_rate_bps,
+                             p.interest_method, p.deposits_multiplier_pct, p.min_membership_months,
+                             p.max_arrears_days, p.one_third_rule, p.guarantor_cover, p.min_guarantors)
+
+
+def _get_product(s: Session, institution_id: int, product_id: int) -> LoanProduct:
+    p = s.get(LoanProduct, product_id)
+    if not p or p.institution_id != institution_id:
+        raise HTTPException(404, "loan product not found")
+    return p
+
+
+@app.get("/institutions/{institution_id}/loan-products", dependencies=[Depends(require("read"))], tags=["loans"])
+def list_products(institution_id: int, s: Session = Depends(get_session)):
+    rows = s.scalars(select(LoanProduct).where(LoanProduct.institution_id == institution_id).order_by(LoanProduct.code))
+    return [_product_out(p) for p in rows]
+
+
+@app.post("/institutions/{institution_id}/loan-products", tags=["loans"])
+def create_product(institution_id: int, body: ProductIn, s: Session = Depends(get_session),
+                   who: Principal = Depends(require("loan_products"))):
+    _inst(s, institution_id)
+    if s.scalar(select(LoanProduct.id).where(LoanProduct.institution_id == institution_id,
+                                             LoanProduct.code == body.code.upper())):
+        raise HTTPException(409, f"product code {body.code.upper()} already exists")
+    now = auth.utcnow()
+    p = LoanProduct(institution_id=institution_id, created_at=now, updated_at=now)
+    body.apply(p)
+    s.add(p)
+    s.flush()
+    audit.record(s, who, "loan_product.create", "loan_product", p.id, after=_product_out(p))
+    s.commit()
+    return _product_out(p)
+
+
+@app.put("/institutions/{institution_id}/loan-products/{product_id}", tags=["loans"])
+def update_product(institution_id: int, product_id: int, body: ProductIn, s: Session = Depends(get_session),
+                   who: Principal = Depends(require("loan_products"))):
+    """Changes apply to appraisals from now on; applications keep the appraisal they were given."""
+    p = _get_product(s, institution_id, product_id)
+    clash = s.scalar(select(LoanProduct.id).where(LoanProduct.institution_id == institution_id,
+                                                  LoanProduct.code == body.code.upper(), LoanProduct.id != p.id))
+    if clash:
+        raise HTTPException(409, f"product code {body.code.upper()} already exists")
+    before = _product_out(p)
+    body.apply(p)
+    p.updated_at = auth.utcnow()
+    after = _product_out(p)
+    audit.record(s, who, "loan_product.update", "loan_product", p.id,
+                 before={k: v for k, v in before.items() if after[k] != v},
+                 after={k: v for k, v in after.items() if before[k] != v})
+    s.commit()
+    return after
+
+
+def _member_facts(s: Session, institution_id: int, member_no: str):
+    m = s.scalar(select(Member).where(Member.institution_id == institution_id, Member.member_no == member_no))
+    if not m:
+        raise HTTPException(404, "member not found")
+    loans = [appraisal.ExistingLoan(ln.loan_no, ln.balance_cents, ln.days_in_arrears)
+             for ln in s.scalars(select(Loan).where(Loan.institution_id == institution_id, Loan.member_id == m.id,
+                                                    Loan.status == "active"))]
+    return m, appraisal.MemberFacts(m.joined_on, m.deposits_cents, m.gross_pay_cents, m.net_pay_cents), loans
+
+
+def _appraisal_out(a: appraisal.Appraisal) -> dict:
+    return {"outcome": a.outcome, "instalment_kes": a.instalment_cents / 100,
+            "max_eligible_kes": a.max_eligible_cents / 100, "max_eligible_partial": a.max_eligible_partial,
+            "unknown_limits": [k for k, v in a.limits.items() if v is None],
+            "required_cover_kes": a.required_cover_cents / 100, "accepted_cover_kes": a.accepted_cover_cents / 100,
+            "checks": [{"code": c.code, "status": c.status, "message": c.message} for c in a.checks]}
+
+
+class WhatIfIn(BaseModel):
+    member_no: str
+    product_id: int
+    amount_kes: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    term_months: int = Field(ge=1, le=240)
+
+
+@app.post("/institutions/{institution_id}/appraisal/what-if", dependencies=[Depends(require("read"))], tags=["loans"])
+def appraisal_what_if(institution_id: int, body: WhatIfIn, s: Session = Depends(get_session)):
+    """Appraise a possible loan for a member without saving anything (no guarantors yet)."""
+    p = _get_product(s, institution_id, body.product_id)
+    m, facts, loans = _member_facts(s, institution_id, body.member_no)
+    a = appraisal.appraise(_cents(body.amount_kes), body.term_months, _product_rules(p), facts, loans, [],
+                           auth.utcnow().date())
+    return {"member_no": m.member_no, "member": m.name, "product": p.code, **_appraisal_out(a)}
+
+
+# ---------------------------------------------------------------- loan applications
+
+class ApplicationIn(BaseModel):
+    member_no: str
+    product_id: int
+    amount_kes: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    term_months: int = Field(ge=1, le=240)
+    purpose: str | None = Field(default=None, max_length=500)
+
+
+class ApplicationPatch(BaseModel):
+    amount_kes: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
+    term_months: int | None = Field(default=None, ge=1, le=240)
+    purpose: str | None = Field(default=None, max_length=500)
+
+
+class DecisionIn(BaseModel):
+    decision: str = Field(pattern="^(approve|decline)$")
+    note: str | None = Field(default=None, max_length=1000)
+    override_reason: str | None = Field(default=None, min_length=10, max_length=1000,
+                                        description="required to approve when a check failed or is unknown")
+
+
+def _get_application(s: Session, institution_id: int, app_id: int, lock: bool = False) -> LoanApplication:
+    q = select(LoanApplication).where(LoanApplication.id == app_id, LoanApplication.institution_id == institution_id)
+    a = s.scalar(q.with_for_update() if lock else q)
+    if not a:
+        raise HTTPException(404, "application not found")
+    return a
+
+
+def _appraise_application(s: Session, a: LoanApplication) -> appraisal.Appraisal:
+    prod = s.get(LoanProduct, a.product_id)
+    m = s.get(Member, a.member_id)
+    _, facts, loans = _member_facts(s, a.institution_id, m.member_no)
+    return appraisal.appraise(a.amount_cents, a.term_months, _product_rules(prod), facts, loans,
+                              _guarantees_for(s, a), auth.utcnow().date())
+
+
+def _guarantees_for(s: Session, a: LoanApplication) -> list:
+    rows = s.scalars(select(Guarantee).where(Guarantee.application_id == a.id,
+                                             Guarantee.status.in_(("requested", "accepted", "declined"))))
+    return [appraisal.Guarantee(s.get(Member, g.guarantor_member_id).name, g.amount_cents,
+                                guarantors.effective_status(g)) for g in rows]
+
+
+def _application_out(s: Session, a: LoanApplication, live: bool = False) -> dict:
+    m, prod = s.get(Member, a.member_id), s.get(LoanProduct, a.product_id)
+    decisions = s.scalars(select(LoanDecision).where(LoanDecision.application_id == a.id).order_by(LoanDecision.id))
+    out = {"id": a.id, "status": a.status, "member_no": m.member_no, "member": m.name,
+           "product_id": prod.id, "product": prod.code, "product_name": prod.name,
+           "amount_kes": a.amount_cents / 100, "term_months": a.term_months, "purpose": a.purpose,
+           "approvals_needed": a.approvals_needed, "override_reason": a.override_reason,
+           "prepared_by_user_id": a.prepared_by_user_id, "created_at": a.created_at,
+           "submitted_at": a.submitted_at, "decided_at": a.decided_at, "exported_at": a.exported_at,
+           "disbursed_at": a.disbursed_at, "appraisal": a.appraisal, "appraisal_outcome": a.appraisal_outcome,
+           "decisions": [{"user_id": d.user_id, "decision": d.decision, "note": d.note,
+                          "appraisal_outcome": d.appraisal_outcome, "at": d.at} for d in decisions]}
+    if live and a.status in ("draft", "submitted"):
+        out["appraisal"] = _appraisal_out(_appraise_application(s, a))
+        out["appraisal_outcome"] = out["appraisal"]["outcome"]
+    return out
+
+
+@app.post("/institutions/{institution_id}/loan-applications", tags=["loans"])
+def create_application(institution_id: int, body: ApplicationIn, s: Session = Depends(get_session),
+                       who: Principal = Depends(require("loan_apply"))):
+    prod = _get_product(s, institution_id, body.product_id)
+    if not prod.active:
+        raise HTTPException(409, f"product {prod.code} is not active")
+    m, _, _ = _member_facts(s, institution_id, body.member_no)
+    a = LoanApplication(institution_id=institution_id, member_id=m.id, product_id=prod.id,
+                        amount_cents=_cents(body.amount_kes), term_months=body.term_months, purpose=body.purpose,
+                        status="draft", prepared_by_user_id=who.id, created_at=auth.utcnow())
+    s.add(a)
+    s.flush()
+    audit.record(s, who, "loan_application.create", "loan_application", a.id,
+                 after={"member_no": m.member_no, "product": prod.code, "amount_cents": a.amount_cents,
+                        "term_months": a.term_months})
+    s.commit()
+    return _application_out(s, a, live=True)
+
+
+@app.get("/institutions/{institution_id}/loan-applications", dependencies=[Depends(require("read"))], tags=["loans"])
+def list_applications(institution_id: int, status: str | None = None, limit: int = Query(100, ge=1, le=500),
+                      s: Session = Depends(get_session)):
+    q = select(LoanApplication).where(LoanApplication.institution_id == institution_id)
+    if status:
+        q = q.where(LoanApplication.status.in_(status.split(",")))
+    return [_application_out(s, a) for a in s.scalars(q.order_by(LoanApplication.id.desc()).limit(limit))]
+
+
+@app.get("/institutions/{institution_id}/loan-applications/{app_id}", dependencies=[Depends(require("read"))],
+         tags=["loans"])
+def get_application(institution_id: int, app_id: int, s: Session = Depends(get_session)):
+    """Drafts and submitted applications are appraised afresh on every read; decided ones show their snapshot."""
+    return _application_out(s, _get_application(s, institution_id, app_id), live=True)
+
+
+@app.patch("/institutions/{institution_id}/loan-applications/{app_id}", tags=["loans"])
+def update_application(institution_id: int, app_id: int, body: ApplicationPatch, s: Session = Depends(get_session),
+                       who: Principal = Depends(require("loan_apply"))):
+    a = _get_application(s, institution_id, app_id, lock=True)
+    if a.status != "draft":
+        raise HTTPException(409, "only a draft can be changed; withdraw and start again")
+    before = {"amount_cents": a.amount_cents, "term_months": a.term_months, "purpose": a.purpose}
+    if body.amount_kes is not None:
+        a.amount_cents = _cents(body.amount_kes)
+    if body.term_months is not None:
+        a.term_months = body.term_months
+    if body.purpose is not None:
+        a.purpose = body.purpose
+    after = {"amount_cents": a.amount_cents, "term_months": a.term_months, "purpose": a.purpose}
+    audit.record(s, who, "loan_application.update", "loan_application", a.id,
+                 before={k: v for k, v in before.items() if after[k] != v},
+                 after={k: v for k, v in after.items() if before[k] != v})
+    s.commit()
+    return _application_out(s, a, live=True)
+
+
+@app.post("/institutions/{institution_id}/loan-applications/{app_id}/submit", tags=["loans"])
+def submit_application(institution_id: int, app_id: int, s: Session = Depends(get_session),
+                       who: Principal = Depends(require("loan_apply"))):
+    """Hand the application to the approvers, with the appraisal as it stands now."""
+    a = _get_application(s, institution_id, app_id, lock=True)
+    if a.status != "draft":
+        raise HTTPException(409, f"application is already {a.status}")
+    result = _appraise_application(s, a)
+    prod = s.get(LoanProduct, a.product_id)
+    a.appraisal, a.appraisal_outcome = _appraisal_out(result), result.outcome
+    above = prod.second_approval_above_cents is not None and a.amount_cents > prod.second_approval_above_cents
+    a.approvals_needed = 2 if above else 1
+    a.status, a.submitted_at = "submitted", auth.utcnow()
+    audit.record(s, who, "loan_application.submit", "loan_application", a.id,
+                 after={"appraisal_outcome": result.outcome, "approvals_needed": a.approvals_needed})
+    s.commit()
+    return _application_out(s, a, live=True)
+
+
+@app.post("/institutions/{institution_id}/loan-applications/{app_id}/withdraw", tags=["loans"])
+def withdraw_application(institution_id: int, app_id: int, note: str = Query(..., min_length=3),
+                         s: Session = Depends(get_session), who: Principal = Depends(require("loan_apply"))):
+    a = _get_application(s, institution_id, app_id, lock=True)
+    if a.status not in ("draft", "submitted"):
+        raise HTTPException(409, f"an application that is {a.status} cannot be withdrawn")
+    before = a.status
+    a.status, a.decided_at = "withdrawn", auth.utcnow()
+    _release_guarantees(s, a, who, "application withdrawn")
+    audit.record(s, who, "loan_application.withdraw", "loan_application", a.id, before={"status": before},
+                 after={"status": "withdrawn"}, note=note)
+    s.commit()
+    return _application_out(s, a)
+
+
+@app.post("/institutions/{institution_id}/loan-applications/{app_id}/decide", tags=["loans"])
+def decide_application(institution_id: int, app_id: int, body: DecisionIn, s: Session = Depends(get_session),
+                       who: Principal = Depends(require("loan_approve"))):
+    """An approver's decision. Never on an application they prepared; one decline ends it; approval needs the
+    product's number of distinct approvers. Approving despite a failed or unknown check needs a written reason."""
+    a = _get_application(s, institution_id, app_id, lock=True)  # row lock: two approvers at once stay consistent
+    if a.status != "submitted":
+        raise HTTPException(409, f"application is {a.status}, not waiting for a decision")
+    if a.prepared_by_user_id == who.id:
+        raise HTTPException(403, "you prepared this application, so another approver must decide")
+    if s.scalar(select(LoanDecision.id).where(LoanDecision.application_id == a.id, LoanDecision.user_id == who.id)):
+        raise HTTPException(409, "you have already decided on this application")
+    result = _appraise_application(s, a)  # decide on today's figures, not the ones at submission
+    if body.decision == "approve" and result.outcome != "passes" and not body.override_reason:
+        raise HTTPException(422, f"the appraisal {result.outcome}: give an override_reason to approve anyway")
+    now = auth.utcnow()
+    s.add(LoanDecision(institution_id=institution_id, application_id=a.id, user_id=who.id, decision=body.decision,
+                       note=body.note, appraisal_outcome=result.outcome, at=now))
+    s.flush()
+    a.appraisal, a.appraisal_outcome = _appraisal_out(result), result.outcome
+    if body.decision == "approve" and result.outcome != "passes":
+        a.override_reason = "\n".join(x for x in (a.override_reason, body.override_reason) if x)
+    approvals = s.scalar(select(func.count()).where(LoanDecision.application_id == a.id,
+                                                    LoanDecision.decision == "approve"))
+    before = a.status
+    if body.decision == "decline":
+        a.status, a.decided_at = "declined", now
+        _release_guarantees(s, a, who, "application declined")
+    elif approvals >= a.approvals_needed:
+        a.status, a.decided_at = "approved", now
+    audit.record(s, who, f"loan_application.{body.decision}", "loan_application", a.id,
+                 before={"status": before}, note=body.note,
+                 after={"status": a.status, "appraisal_outcome": result.outcome,
+                        "approvals": approvals, "approvals_needed": a.approvals_needed,
+                        "override_reason": body.override_reason if body.decision == "approve" else None})
+    s.commit()
+    return _application_out(s, a)
+
+
+@app.post("/institutions/{institution_id}/loan-applications/export.csv", tags=["loans"])
+def export_approved(institution_id: int, s: Session = Depends(get_session),
+                    who: Principal = Depends(require("loan_export"))):
+    """Approved loans not yet handed over, as a file for the core system to disburse. Each loan is in exactly
+    one export; it is marked exported here. Sawazi never disburses."""
+    apps = list(s.scalars(select(LoanApplication).where(LoanApplication.institution_id == institution_id,
+                                                        LoanApplication.status == "approved")
+                          .order_by(LoanApplication.id).with_for_update()))
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["sawazi_ref", "member_no", "member_name", "product_code", "amount", "term_months", "approved_at",
+                "approved_by", "with_exceptions"])
+    now = auth.utcnow()
+    for a in apps:
+        m, prod = s.get(Member, a.member_id), s.get(LoanProduct, a.product_id)
+        approvers = [s.get(StaffUser, d.user_id).name for d in s.scalars(
+            select(LoanDecision).where(LoanDecision.application_id == a.id, LoanDecision.decision == "approve"))]
+        w.writerow([f"SWZ-{a.id}", m.member_no, m.name, prod.code, f"{a.amount_cents / 100:.2f}", a.term_months,
+                    a.decided_at.strftime("%Y-%m-%d %H:%M"), "; ".join(approvers), "yes" if a.override_reason else "no"])
+        a.status, a.exported_at = "exported", now
+    audit.record(s, who, "loan_application.export", after={"applications": [a.id for a in apps]})
+    s.commit()
+    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
+                             headers={"Content-Disposition": f"attachment; filename=sawazi_loans_{now:%Y%m%d_%H%M}.csv"})
+
+
+# ---------------------------------------------------------------- guarantors
+
+class GuarantorIn(BaseModel):
+    member_no: str
+    amount_kes: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+
+
+def _guarantee_out(s: Session, g: Guarantee) -> dict:
+    m = s.get(Member, g.guarantor_member_id)
+    return {"id": g.id, "application_id": g.application_id, "member_no": m.member_no, "name": m.name,
+            "phone": g.phone, "amount_kes": g.amount_cents / 100, "status": guarantors.effective_status(g),
+            "requested_at": g.requested_at, "expires_at": g.expires_at, "responded_at": g.responded_at}
+
+
+def _release_guarantees(s: Session, a: LoanApplication, who: Principal, why: str) -> None:
+    for g in s.scalars(select(Guarantee).where(Guarantee.application_id == a.id,
+                                               Guarantee.status.in_(("requested", "accepted")))):
+        before = g.status
+        g.status = "released" if g.status == "accepted" else "cancelled"
+        audit.record(s, who, "guarantee.release", "guarantee", g.id, before={"status": before},
+                     after={"status": g.status}, note=why)
+
+
+@app.get("/institutions/{institution_id}/loan-applications/{app_id}/guarantors",
+         dependencies=[Depends(require("read"))], tags=["guarantors"])
+def list_guarantors(institution_id: int, app_id: int, s: Session = Depends(get_session)):
+    a = _get_application(s, institution_id, app_id)
+    rows = s.scalars(select(Guarantee).where(Guarantee.application_id == a.id).order_by(Guarantee.id))
+    return [_guarantee_out(s, g) for g in rows]
+
+
+@app.post("/institutions/{institution_id}/loan-applications/{app_id}/guarantors", tags=["guarantors"])
+def request_guarantor(institution_id: int, app_id: int, body: GuarantorIn, s: Session = Depends(get_session),
+                      who: Principal = Depends(require("loan_apply")), provider=Depends(sms.get_provider)):
+    """Ask a member to guarantee part of this loan. They get an SMS with a one-time link to accept or decline."""
+    base = guarantors.public_url()
+    if not base:
+        raise HTTPException(503, "SAWAZI_PUBLIC_URL is not set (the https address members open links on)")
+    a = _get_application(s, institution_id, app_id, lock=True)
+    if a.status not in guarantors.OPEN_APPLICATION:
+        raise HTTPException(409, f"application is {a.status}; guarantors can only be added before a decision")
+    settings = _sms_settings(s, institution_id)
+    if provider.name != "simulate" and not settings.enabled:
+        raise HTTPException(409, "SMS is not switched on for this institution yet (admin: SMS settings)")
+    g_member = s.scalar(select(Member).where(Member.institution_id == institution_id,
+                                             Member.member_no == body.member_no))
+    if not g_member:
+        raise HTTPException(404, "guarantor is not a member of this institution")
+    if g_member.id == a.member_id:
+        raise HTTPException(422, "a member cannot guarantee their own loan")
+    if s.scalar(select(Guarantee.id).where(Guarantee.application_id == a.id, Guarantee.guarantor_member_id == g_member.id,
+                                           Guarantee.status.in_(("requested", "accepted")))):
+        raise HTTPException(409, f"{g_member.member_no} has already been asked for this loan")
+    phone = norm_phone(g_member.phone)
+    if not phone:
+        raise HTTPException(422, f"{g_member.member_no} has no valid phone number on record")
+    if _opted_out(s, institution_id, phone):
+        raise HTTPException(409, f"{g_member.member_no} has opted out of SMS; they must confirm in the branch")
+    prod = s.get(LoanProduct, a.product_id)
+    behind = s.scalar(select(func.max(Loan.days_in_arrears)).where(
+        Loan.institution_id == institution_id, Loan.member_id == g_member.id, Loan.status == "active")) or 0
+    if behind > prod.max_arrears_days:
+        raise HTTPException(422, f"{g_member.member_no} has a loan {behind} days in arrears and cannot guarantee")
+    amount = _cents(body.amount_kes)
+    free = guarantors.free_capacity(s, g_member)
+    if free is None:
+        raise HTTPException(422, f"{g_member.member_no}'s deposits are not known: upload member balances first")
+    if amount > free:
+        raise HTTPException(422, f"{g_member.member_no} can guarantee at most {guarantors.kes(max(free, 0))} "
+                                 f"(deposits less what they already guarantee)")
+
+    token, now = guarantors.new_token(), auth.utcnow()
+    g = Guarantee(institution_id=institution_id, application_id=a.id, guarantor_member_id=g_member.id,
+                  amount_cents=amount, status="requested", phone=phone, token_hash=guarantors.token_hash(token),
+                  expires_at=now + timedelta(days=guarantors.LINK_DAYS), requested_by_user_id=who.id,
+                  requested_at=now)
+    s.add(g)
+    s.flush()
+    inst, applicant = s.get(Institution, institution_id), s.get(Member, a.member_id)
+    text = guarantors.request_sms(inst, applicant, a, g, f"{base}/g/{token}")
+    msg = SmsMessage(institution_id=institution_id, member_id=g_member.id, phone=phone,
+                     body=guarantors.redact(text, token), provider=provider.name, status="pending",
+                     approved_by_user_id=who.id, approved_at=now)
+    s.add(msg)
+    s.flush()
+    audit.record(s, who, "guarantee.request", "guarantee", g.id,
+                 after={"application_id": a.id, "guarantor": g_member.member_no, "amount_cents": amount,
+                        "phone": phone})
+    s.commit()  # on record before the SMS leaves
+    try:
+        res = provider.send(phone, text, settings.service_name)
+    except Exception as e:
+        res = sms.SendResult("unknown", description=f"Error while sending ({type(e).__name__})")
+    msg.status, msg.provider_message_id = res.status, res.provider_message_id
+    msg.provider_status, msg.provider_description = res.provider_status, res.description
+    msg.sent_at = auth.utcnow() if res.status != "failed" else None
+    s.commit()
+    return {**_guarantee_out(s, g), "sms": res.status}
+
+
+@app.post("/institutions/{institution_id}/loan-applications/{app_id}/guarantors/{guarantee_id}/cancel",
+          tags=["guarantors"])
+def cancel_guarantor(institution_id: int, app_id: int, guarantee_id: int, note: str = Query(..., min_length=3),
+                     s: Session = Depends(get_session), who: Principal = Depends(require("loan_apply"))):
+    a = _get_application(s, institution_id, app_id, lock=True)
+    g = s.get(Guarantee, guarantee_id)
+    if not g or g.application_id != a.id:
+        raise HTTPException(404, "guarantee not found")
+    if a.status not in guarantors.OPEN_APPLICATION or g.status not in ("requested", "accepted"):
+        raise HTTPException(409, "this guarantee can no longer be cancelled")
+    before = g.status
+    g.status = "released" if g.status == "accepted" else "cancelled"
+    audit.record(s, who, "guarantee.cancel", "guarantee", g.id, before={"status": before},
+                 after={"status": g.status}, note=note)
+    s.commit()
+    return _guarantee_out(s, g)
+
+
+@app.get("/institutions/{institution_id}/members/{member_no}/guarantor-exposure",
+         dependencies=[Depends(require("read"))], tags=["guarantors"])
+def guarantor_exposure(institution_id: int, member_no: str, s: Session = Depends(get_session)):
+    """What a member has pledged for other people's loans, and how much more they could guarantee."""
+    m = s.scalar(select(Member).where(Member.institution_id == institution_id, Member.member_no == member_no))
+    if not m:
+        raise HTTPException(404, "member not found")
+    rows = list(s.scalars(select(Guarantee).where(Guarantee.institution_id == institution_id,
+                                                  Guarantee.guarantor_member_id == m.id,
+                                                  Guarantee.status.in_(("requested", "accepted")))))
+    free = guarantors.free_capacity(s, m)
+    return {"member_no": m.member_no, "name": m.name,
+            "deposits_kes": m.deposits_cents / 100 if m.deposits_cents is not None else None,
+            "pledged_kes": guarantors.pledged_cents(s, institution_id, m.id) / 100,
+            "free_kes": free / 100 if free is not None else None,
+            "guarantees": [_guarantee_out(s, g) for g in rows if guarantors.effective_status(g) != "expired"]}
+
+
+# ---------------------------------------------------------------- the guarantor's own page (public, by link)
+
+def _by_token(s: Session, token: str) -> Guarantee | None:
+    if len(token) > 40:
+        return None
+    return s.scalar(select(Guarantee).where(Guarantee.token_hash == guarantors.token_hash(token)))
+
+
+def _consent_page(s: Session, g: Guarantee | None, token: str, notice: str = "", error: str = "") -> HTMLResponse:
+    G = guarantors
+    if g is None:
+        return HTMLResponse(G.page("Link not valid", "<h1>This link is not valid</h1>",
+                                   "<p>Check the SMS and try again, or contact your SACCO.</p>"), status_code=404)
+    a, inst = s.get(LoanApplication, g.application_id), s.get(Institution, g.institution_id)
+    applicant, prod = s.get(Member, a.member_id), s.get(LoanProduct, a.product_id)
+    head = G.summary(inst, applicant, a, prod, g)
+    status = G.effective_status(g)
+    if status != "requested" or a.status not in G.OPEN_APPLICATION:
+        done = {"accepted": "You accepted. Thank you.", "declined": "You declined. Nothing more is needed.",
+                "expired": "This request has expired. Contact your SACCO if you still want to guarantee."}
+        msg = done.get(status, "This request is no longer open.")
+        return HTMLResponse(G.page("Guarantee", head, f'<div class="note info">{G.esc(msg)}</div>'))
+    alerts = (f'<div class="note ok" role="status">{G.esc(notice)}</div>' if notice else "") + \
+             (f'<div class="note err" role="alert">{G.esc(error)}</div>' if error else "")
+    t = G.esc(token)
+    forms = f"""
+<form method="post" action="/g/{t}/pin" class="stack"><p class="small">To accept, get a PIN by SMS on
+{G.esc(g.phone[:6] + '***' + g.phone[-3:])}.</p><button type="submit">Send me a PIN</button></form>
+<form method="post" action="/g/{t}/accept" class="stack">
+<label>PIN from the SMS<input name="pin" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{{6}}"
+maxlength="6" required></label><button type="submit" class="primary">Accept: I guarantee {G.esc(G.kes(g.amount_cents))}</button></form>
+<form method="post" action="/g/{t}/decline"><button type="submit" class="danger">Decline</button></form>"""
+    return HTMLResponse(G.page("Guarantee", head, alerts, forms))
+
+
+_CONSENT_NOTES = {
+    "pin": ("PIN sent. It works for 10 minutes.", ""),
+    "pin-limit": ("", "Too many PINs requested. Contact your SACCO."),
+    "pin-failed": ("", "We could not send the PIN. Try again in a minute."),
+    "pin-first": ("", "Ask for a PIN first (or a new one: it lasts 10 minutes)."),
+    "pin-locked": ("", "Too many wrong PINs. Ask for a new PIN."),
+    "pin-wrong": ("", "That PIN is not right."),
+    "capacity": ("", "Your deposits no longer cover this amount. Contact your SACCO."),
+}
+
+
+def _back(token: str, code: str | None = None) -> RedirectResponse:
+    """Post/redirect/get: refreshing the page never re-sends a form (and never sends another PIN)."""
+    return RedirectResponse(f"/g/{token}" + (f"?m={code}" if code else ""), status_code=303)
+
+
+@app.get("/g/{token}", include_in_schema=False)
+def consent_page(token: str, m: str | None = None, s: Session = Depends(get_session)):
+    notice, error = _CONSENT_NOTES.get(m or "", ("", ""))
+    return _consent_page(s, _by_token(s, token), token, notice=notice, error=error)
+
+
+@app.post("/g/{token}/pin", include_in_schema=False)
+def consent_pin(token: str, request: Request, s: Session = Depends(get_session), provider=Depends(sms.get_provider)):
+    g = _by_token(s, token)
+    if g is None:
+        return _consent_page(s, g, token)
+    if guarantors.effective_status(g) != "requested":
+        return _back(token)
+    if g.pins_sent >= guarantors.MAX_PINS:
+        return _back(token, "pin-limit")
+    pin = f"{secrets.randbelow(10 ** 6):06d}"
+    g.pin_hash, g.pin_expires_at = guarantors.pin_hash(g, pin), auth.utcnow() + timedelta(minutes=guarantors.PIN_MINUTES)
+    g.pin_attempts, g.pins_sent = 0, g.pins_sent + 1
+    s.commit()
+    a, inst = s.get(LoanApplication, g.application_id), s.get(Institution, g.institution_id)
+    settings = _sms_settings(s, g.institution_id)
+    try:
+        provider.send(g.phone, guarantors.pin_sms(inst, s.get(Member, a.member_id), pin), settings.service_name)
+    except Exception:
+        log.exception("guarantor PIN SMS failed")
+        return _back(token, "pin-failed")
+    return _back(token, "pin")
+
+
+@app.post("/g/{token}/accept", include_in_schema=False)
+def consent_accept(token: str, request: Request, pin: str = Form(""), s: Session = Depends(get_session)):
+    pin = pin.strip()
+    g = _by_token(s, token)
+    if g is None:
+        return _consent_page(s, g, token)
+    if guarantors.effective_status(g) != "requested":
+        return _back(token)
+    g = s.scalar(select(Guarantee).where(Guarantee.id == g.id).with_for_update())
+    a = s.get(LoanApplication, g.application_id)
+    if a.status not in guarantors.OPEN_APPLICATION:
+        return _back(token)
+    if g.pin_hash is None or g.pin_expires_at <= auth.utcnow():
+        return _back(token, "pin-first")
+    if g.pin_attempts >= guarantors.MAX_PIN_ATTEMPTS:
+        return _back(token, "pin-locked")
+    if not hmac.compare_digest(guarantors.pin_hash(g, pin), g.pin_hash):
+        g.pin_attempts += 1
+        s.commit()
+        return _back(token, "pin-wrong")
+    # Capacity again, now, with the guarantor's row locked: two loans cannot both take the same deposits.
+    m = s.scalar(select(Member).where(Member.id == g.guarantor_member_id).with_for_update())
+    free = guarantors.free_capacity(s, m)
+    if free is None or g.amount_cents > free:
+        return _back(token, "capacity")
+    ip = request.client.host if request.client else None
+    g.status, g.responded_at, g.response_ip = "accepted", auth.utcnow(), ip
+    g.pin_hash = None
+    audit.record(s, replace(_GUARANTOR, institution_id=g.institution_id, name=m.name), "guarantee.accept",
+                 "guarantee", g.id, before={"status": "requested"},
+                 after={"status": "accepted", "amount_cents": g.amount_cents, "phone": g.phone}, ip=ip)
+    s.commit()
+    return _back(token)
+
+
+@app.post("/g/{token}/decline", include_in_schema=False)
+def consent_decline(token: str, request: Request, s: Session = Depends(get_session)):
+    g = _by_token(s, token)
+    if g is None:
+        return _consent_page(s, g, token)
+    if guarantors.effective_status(g) != "requested":
+        return _back(token)
+    m = s.get(Member, g.guarantor_member_id)
+    ip = request.client.host if request.client else None
+    g.status, g.responded_at, g.response_ip, g.pin_hash = "declined", auth.utcnow(), ip, None
+    audit.record(s, replace(_GUARANTOR, institution_id=g.institution_id, name=m.name), "guarantee.decline",
+                 "guarantee", g.id, before={"status": "requested"}, after={"status": "declined"}, ip=ip)
+    s.commit()
+    return _back(token)
+
+
+_GUARANTOR = Principal("member", None, 0, "", "")
+
+
 # ---------------------------------------------------------------- staff web console
 # Plain HTML/CSS/JS served by the API: no build step, nothing extra to host. It calls the JSON API
 # above with the staff member's bearer token; the server enforces every permission.
@@ -1070,6 +1704,11 @@ CONSOLE_CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://
 @app.middleware("http")
 async def console_security_headers(request: Request, call_next):
     response = await call_next(request)
+    if request.url.path.startswith("/g/"):
+        response.headers["Content-Security-Policy"] = guarantors.PAGE_CSP
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Cache-Control"] = "no-store"
     if request.url.path.startswith("/console"):
         response.headers["Content-Security-Policy"] = CONSOLE_CSP
         response.headers["X-Content-Type-Options"] = "nosniff"

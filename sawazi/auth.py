@@ -27,13 +27,13 @@ from sqlalchemy.orm import Session
 from .db import get_session
 from .models import ApiKey, StaffSession, StaffUser
 
-ROLES = ("admin", "accountant", "credit_officer", "viewer")
+ROLES = ("admin", "accountant", "credit_officer", "approver", "viewer")
 SESSION_HOURS = 12
 MIN_PASSWORD_LEN = 10
 
 # Which roles may do what. Keep this the single source of truth.
 PERMISSIONS: dict[str, set[str]] = {
-    "read": {"admin", "accountant", "credit_officer", "viewer"},   # dashboard, exceptions, reminders
+    "read": {"admin", "accountant", "credit_officer", "approver", "viewer"},  # dashboard, exceptions, reminders
     "collections": {"admin", "accountant", "credit_officer"},      # build the collections queue
     "reconcile": {"admin", "accountant"},                          # imports, matching, check-off
     "resolve": {"admin", "accountant"},                            # clear suspense, close flags
@@ -43,10 +43,15 @@ PERMISSIONS: dict[str, set[str]] = {
     "send_sms": {"admin", "accountant", "credit_officer"},         # approve SMS to members, record opt-outs
     "sms_settings": {"admin"},                                     # SMS setup, opting a number back in
     "allocation_rules": {"admin"},                                 # how payments are split
+    "loan_products": {"admin"},                                    # loan products and their appraisal rules
+    "loan_apply": {"admin", "credit_officer", "approver"},         # capture, submit, withdraw applications
+    "loan_approve": {"approver"},                                  # credit committee: approve or decline
+    "loan_export": {"admin", "accountant"},                        # hand approved loans to the core system
 }
 # A person must do these, never a machine: they move money to a member, message members,
 # or change who has access.
-HUMAN_ONLY = {"resolve", "manage_users", "send_sms", "sms_settings", "allocation_rules"}
+HUMAN_ONLY = {"resolve", "manage_users", "send_sms", "sms_settings", "allocation_rules", "loan_products",
+              "loan_apply", "loan_approve"}
 API_KEY_ROLES = ("accountant", "credit_officer", "viewer")
 API_KEY_PREFIX = "swz_"
 _LAST_USED_EVERY = timedelta(minutes=1)  # don't write to the database on every request
@@ -165,7 +170,7 @@ def _api_key(s: Session, token: str) -> ApiKey:
 class Principal:
     """Whoever is calling: a staff user or an institution API key."""
 
-    kind: str  # user | api_key | platform | anonymous | provider
+    kind: str  # user | api_key | platform | anonymous | provider | member
     id: int | None
     institution_id: int
     role: str

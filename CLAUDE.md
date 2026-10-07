@@ -15,12 +15,23 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 6. Manual SASRA / CBK returns
 
 ## Roadmap
-- Phase 1 (current): repayment matching, check-off reconciliation, collections. Core engine DONE.
-- Phase 2: loan factory (digital applications, appraisal), digital guarantor network (app + USSD)
+- Phase 1 DONE: repayment matching, check-off reconciliation, collections, console, SMS, C2B, PostgreSQL.
+- Phase 2 (current): loan factory (digital applications, appraisal), digital guarantor network (app + USSD)
 - Phase 3: exposure/risk view, board pack, SASRA/CBK return generation, member app
 - Phase 4: cross-institution network (guarantee exposure, sector benchmarks), MFI group lending, regional
 
-## Phase 1 — what is left, in this order
+## Phase 2 — status
+1. Member balances and pay DONE (members export columns + `member_balances` import; unknown is never zero)
+2. Loan products + appraisal engine DONE (`sawazi/engine/appraisal.py`, pure; never approves; unknown is never a pass)
+3. Applications DONE: `approver` role, maker-checker, two approvers above a threshold, written override for
+   failed/unknown checks, hand-over CSV to the core, disbursement linked only on an exact single match
+4. Guarantors by SMS link + PIN DONE (`sawazi/guarantors.py`); capacity re-checked under a row lock on acceptance
+5. Console: Loans, application page, Products DONE
+6. Left: USSD guarantor consent (needs a Taifa USSD shortcode); releasing guarantees when a loan is repaid
+   (needs repayment status from the core export); member self-service applications (Phase 3 member app)
+- Swahili text on the guarantor page needs a native-speaker check before pilots.
+
+## Phase 1 — done
 1. Staff auth DONE: users, roles, per-institution scoping, per-institution API keys (`sawazi/auth.py`, role matrix in `PERMISSIONS`, human-only actions in `HUMAN_ONLY`)
 2. Audit log DONE (`sawazi/audit.py`)
 3. SMS DONE via Taifa Mobile (`sawazi/sms.py`; no Taifa sandbox, so `simulate` is the default provider). Delivery callbacks, opt-outs, staff-approval-only sending. Left: confirm with Taifa the number format (we send 2547XXXXXXXX) and API key length before the first live send
@@ -66,6 +77,8 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 
 ## Quality bar
 - Anything that allocates money (matching, C2B, clearing suspense) runs inside `matching_lock(s, institution_id)`.
+- Anything that commits a member's deposits (guarantor acceptance) locks that member's row first.
+- Sawazi never lends: approved loans leave as a hand-over file; the core system disburses.
 - After any matching change, run `scripts/run_demo.py` and check the ACCURACY line: `auto_allocated_wrong` must stay 0.
 - Sample data is fictional. Never commit real member data. Real data needs ODPC registration and a data processing agreement first.
 - Secrets (Daraja, Taifa Mobile keys, callback token) go in environment variables / `.env` (gitignored), never in code.
