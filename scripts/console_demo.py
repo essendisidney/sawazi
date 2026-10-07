@@ -50,8 +50,9 @@ def seed():
                        files={"file": (name, (DATA / name).read_bytes())})
             r.raise_for_status()
 
-        for kind, name in [("members", "members.csv"), ("loans", "loans.csv"), ("mpesa", "mpesa_statement.csv"),
-                           ("bank", "bank_statement.csv")]:
+        upload("members", "members.csv")
+        upload("loans", "loans.csv", as_of="2026-08-31")  # the sample loans are as they stood before September
+        for kind, name in [("mpesa", "mpesa_statement.csv"), ("bank", "bank_statement.csv")]:
             upload(kind, name)
         for slug, employer in [("county", "Mwangaza County Payroll"), ("tumaini", "Tumaini Schools Ltd")]:
             upload("checkoff_schedule", f"checkoff_schedule_{slug}.csv", employer=employer, period="2026-09")
@@ -59,7 +60,9 @@ def seed():
             c.post(f"/institutions/{iid}/checkoff/reconcile", params={"employer": employer, "period": "2026-09"})
         if (DATA / "guarantees.csv").exists():
             upload("core_guarantees", "guarantees.csv")
+        c.post(f"/institutions/{iid}/snapshots", params={"as_of": "2026-08-31"}).raise_for_status()  # with guarantees
         c.post(f"/institutions/{iid}/match").raise_for_status()
+        c.post(f"/institutions/{iid}/snapshots", params={"as_of": "2026-09-30"}).raise_for_status()  # after September
         c.post(f"/institutions/{iid}/collections/queue").raise_for_status()
         for prod in [{"code": "DEV", "name": "Development Loan", "max_amount_kes": 3_000_000, "max_term_months": 48,
                       "interest_rate_pct": 12, "second_approval_above_kes": 1_000_000},

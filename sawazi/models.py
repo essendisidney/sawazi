@@ -473,3 +473,17 @@ class CoreGuarantee(Base):
     status: Mapped[str] = mapped_column(String(20), index=True)  # active | released
     imported_at: Mapped[datetime] = mapped_column(DateTime)
     released_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class PortfolioSnapshot(Base):
+    """Portfolio quality as it stood on a date: what board packs compare month to month. One per institution per
+    day (a later snapshot the same day replaces it). Never back-filled: a month without one stays missing."""
+
+    __tablename__ = "portfolio_snapshots"
+    __table_args__ = (UniqueConstraint("institution_id", "as_of"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    as_of: Mapped[date] = mapped_column(Date)
+    taken_at: Mapped[datetime] = mapped_column(DateTime)
+    figures: Mapped[dict] = mapped_column(JSON)

@@ -24,7 +24,8 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 1. Risk and exposure view DONE (`sawazi/engine/exposure.py`, `GET /risk`, console Risk page). Core-system guarantees
    import (`core_guarantees`, `CoreGuarantee`); `guarantors.core_counts()` makes Sawazi's record win, so a pledge is
    never counted twice; pledges from both count towards capacity
-2. Next: monthly snapshots + board pack (trends need history)
+2. Snapshots + board pack DONE (`sawazi/boardpack.py`): snapshots dated by the figures' as-at date (loans upload
+   `as_of`), never back-filled; pack is one escaped HTML file with an In brief summary, SVG charts, governance in words
 3. Then: regulatory returns. Ask first whether pilots are SASRA deposit-taking SACCOs or MFIs (CBK); SASRA
    classification rates in `exposure.CLASSES` must be checked against the current SASRA form
 4. Then: member app (ask about its form first)
@@ -56,7 +57,7 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 7. Alembic + PostgreSQL DONE (`migrations/`, `alembic upgrade head` on deploy; API also migrates on start). Suite passes on PostgreSQL 16 (`SAWAZI_TEST_DB_URL`)
 
 ## Stack and conventions
-- FastAPI + SQLAlchemy 2.0 (typed `Mapped[]` models) + pydantic v2. SQLite locally, PostgreSQL in production via `SAWAZI_DB_URL`.
+- Python 3.11+. FastAPI + SQLAlchemy 2.0 (typed `Mapped[]` models) + pydantic v2. SQLite locally, PostgreSQL in production via `SAWAZI_DB_URL`.
 - Money is ALWAYS integer cents (`*_cents`, `BigInteger` columns). Never floats for stored money.
 - Every table has `institution_id` (multi-tenant). Every query must filter by it. Never leak data across institutions.
 - Imports must be idempotent: re-uploading a file never double-counts (unique on institution + source + reference).

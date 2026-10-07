@@ -16,7 +16,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -28,7 +28,7 @@ from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import audit, auth, daraja, guarantors, sms, ussd
+from . import audit, auth, boardpack, daraja, guarantors, risk, sms, ussd
 from .auth import API_KEY_ROLES, PERMISSIONS, ROLES, Principal, require
 from .db import get_session, init_db
 from .engine.checkoff import reconcile_checkoff
@@ -37,7 +37,7 @@ from .engine import allocation, appraisal, exposure
 from .engine.matching import allocate, run_matching
 from .importers import sources
 from .importers.common import norm_phone
-from .models import (Allocation, AllocationRules, ApiKey, CoreGuarantee, Guarantee, LoanApplication, LoanDecision, LoanProduct, AuditEvent, ExceptionItem, Institution, Loan, Member, MpesaCallback,
+from .models import (Allocation, AllocationRules, ApiKey, CoreGuarantee, Guarantee, PortfolioSnapshot, LoanApplication, LoanDecision, LoanProduct, AuditEvent, ExceptionItem, Institution, Loan, Member, MpesaCallback,
                      Reminder, SmsMessage, SmsOptOut, SmsSettings, StaffSession, StaffUser, Transaction)
 
 @asynccontextmanager
@@ -315,10 +315,13 @@ async def import_file(
     employer: str | None = Query(None, description="check-off imports only"),
     period: str | None = Query(None, pattern=r"^\d{4}-\d{2}$", description="YYYY-MM, check-off imports only"),
     replace: bool = Query(False, description="core_guarantees only: the file is the complete current list"),
+    as_of: date | None = Query(None, description="loans only: the date the export's figures are as at (default today)"),
     s: Session = Depends(get_session),
     who: Principal = Depends(require("reconcile")),
 ):
     _inst(s, institution_id)
+    if as_of and as_of > auth.utcnow().date():  # checked before anything is imported
+        raise HTTPException(422, "as_of cannot be in the future")
     content = await file.read()
     note = f"file {file.filename}"
     if kind == "core_guarantees":
@@ -328,6 +331,8 @@ async def import_file(
         result = IMPORTERS[kind](s, institution_id, content).as_dict()
         if kind == "loans":  # loans the core system now shows as repaid free their guarantors
             result["guarantees_released"] = guarantors.release_repaid(s, institution_id)
+            snap = boardpack.take_snapshot(s, institution_id, as_of)  # the portfolio as the core system reports it
+            result["snapshot_as_of"] = str(snap.as_of)
         return _audited(s, who, f"import.{kind}", result, note)
     if kind in {"checkoff_schedule", "checkoff_remittance"}:
         if not employer or not period:
@@ -1759,29 +1764,6 @@ async def ussd_callback(token: str, request: Request, s: Session = Depends(get_s
 
 # ---------------------------------------------------------------- exposure and risk
 
-def _pledges(s: Session, institution_id: int) -> list:
-    """Every live pledge: accepted in Sawazi (on a loan, or on an application still being decided) and active in
-    the core system (unless Sawazi recorded the same one)."""
-    out = [exposure.Pledge(g.guarantor_member_id, a.member_id, a.disbursed_loan_id, g.amount_cents, "sawazi")
-           for g, a in s.execute(select(Guarantee, LoanApplication)
-                                 .join(LoanApplication, Guarantee.application_id == LoanApplication.id)
-                                 .where(Guarantee.institution_id == institution_id, Guarantee.status == "accepted"))]
-    out += [exposure.Pledge(cg.guarantor_member_id, ln.member_id, ln.id, cg.amount_cents, "core")
-            for cg, ln in s.execute(select(CoreGuarantee, Loan).join(Loan, CoreGuarantee.loan_id == Loan.id)
-                                    .where(CoreGuarantee.institution_id == institution_id,
-                                           CoreGuarantee.status == "active", guarantors.core_counts()))]
-    return out
-
-
-def _risk_report(s: Session, institution_id: int) -> exposure.Report:
-    members = [exposure.MemberRow(m.id, m.member_no, m.name, m.deposits_cents, m.employer)
-               for m in s.scalars(select(Member).where(Member.institution_id == institution_id))]
-    loans = [exposure.LoanRow(ln.id, ln.loan_no, ln.member_id, ln.product, ln.balance_cents, ln.arrears_cents,
-                              ln.days_in_arrears)
-             for ln in s.scalars(select(Loan).where(Loan.institution_id == institution_id, Loan.status == "active"))]
-    return exposure.report(members, loans, _pledges(s, institution_id))
-
-
 def _kes_fields(d):
     """cents -> KES and basis points -> percent, recursively, for the JSON the console reads."""
     if isinstance(d, dict):
@@ -1800,15 +1782,61 @@ def _kes_fields(d):
 
 
 @app.get("/institutions/{institution_id}/risk", dependencies=[Depends(require("read"))], tags=["risk"])
-def risk(institution_id: int, s: Session = Depends(get_session)):
+def risk_view(institution_id: int, s: Session = Depends(get_session)):
     """Loan classification and provisioning, PAR by product and employer, concentration, the guarantor network,
     and flags for a person to look at."""
-    r = _risk_report(s, institution_id)
+    r = risk.report(s, institution_id)
     return _kes_fields({"portfolio": r.portfolio, "classification": r.classification,
                         "par_by_product": r.par_by_product, "par_by_employer": r.par_by_employer,
                         "concentration": r.concentration, "guarantors": r.guarantors,
                         "flags": [{"kind": f.kind, "severity": f.severity, "member_nos": f.member_nos,
                                    "amount_cents": f.amount_cents, "message": f.message} for f in r.flags]})
+
+
+# ---------------------------------------------------------------- snapshots and the board pack
+
+def _snapshot_out(snap: PortfolioSnapshot) -> dict:
+    f = snap.figures
+    return {"as_of": snap.as_of, "taken_at": snap.taken_at, "loans": f["portfolio"]["loans"],
+            "balance_kes": f["portfolio"]["balance_cents"] / 100, "par30_pct": f["portfolio"]["par30_bps"] / 100,
+            "provision_kes": f["portfolio"]["provision_cents"] / 100, "flags": sum(f["flags"].values())}
+
+
+@app.get("/institutions/{institution_id}/snapshots", dependencies=[Depends(require("read"))], tags=["board pack"])
+def list_snapshots(institution_id: int, limit: int = Query(60, ge=1, le=400), s: Session = Depends(get_session)):
+    rows = s.scalars(select(PortfolioSnapshot).where(PortfolioSnapshot.institution_id == institution_id)
+                     .order_by(PortfolioSnapshot.as_of.desc()).limit(limit))
+    return [_snapshot_out(x) for x in rows]
+
+
+@app.post("/institutions/{institution_id}/snapshots", tags=["board pack"])
+def take_snapshot(institution_id: int, as_of: date | None = Query(None, description="default today"),
+                  s: Session = Depends(get_session), who: Principal = Depends(require("board_pack"))):
+    """Record portfolio quality as it stands now (also done after every loans upload). Today's replaces today's."""
+    _inst(s, institution_id)
+    if as_of and as_of > auth.utcnow().date():
+        raise HTTPException(422, "as_of cannot be in the future")
+    snap = boardpack.take_snapshot(s, institution_id, as_of)
+    audit.record(s, who, "snapshot.take", "portfolio_snapshot", snap.id, after={"as_of": str(snap.as_of)})
+    s.commit()
+    return _snapshot_out(snap)
+
+
+@app.get("/institutions/{institution_id}/board-pack.html", tags=["board pack"])
+def board_pack(institution_id: int, month: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+               s: Session = Depends(get_session), who: Principal = Depends(require("board_pack"))):
+    """The month's board pack as one HTML file (open in a browser, print to PDF). For the current month the
+    portfolio is snapshotted first, so the pack shows today's figures."""
+    inst = _inst(s, institution_id)
+    if month == auth.utcnow().strftime("%Y-%m"):
+        boardpack.take_snapshot(s, institution_id)
+    elif month > auth.utcnow().strftime("%Y-%m"):
+        raise HTTPException(422, "that month has not started yet")
+    doc = boardpack.render(inst, boardpack.gather(s, institution_id, month), who.name)
+    audit.record(s, who, "board_pack.generate", note=f"board pack {month}")
+    s.commit()
+    name = f"sawazi_board_pack_{month}.html"
+    return HTMLResponse(doc, headers={"Content-Disposition": f"attachment; filename={name}"})
 
 
 # ---------------------------------------------------------------- staff web console

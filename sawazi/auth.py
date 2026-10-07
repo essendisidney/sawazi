@@ -47,6 +47,7 @@ PERMISSIONS: dict[str, set[str]] = {
     "loan_apply": {"admin", "credit_officer", "approver"},         # capture, submit, withdraw applications
     "loan_approve": {"approver"},                                  # credit committee: approve or decline
     "loan_export": {"admin", "accountant"},                        # hand approved loans to the core system
+    "board_pack": {"admin", "accountant", "approver"},             # snapshots and the monthly board pack
 }
 # A person must do these, never a machine: they move money to a member, message members,
 # or change who has access.

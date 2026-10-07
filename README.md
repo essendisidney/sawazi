@@ -25,11 +25,13 @@ It sits beside any core banking system and works from the CSV/Excel exports ever
 
 ## Run it
 
+Python 3.11 or later.
+
 ```bash
 pip install -r requirements.txt
 python scripts/make_sample_data.py      # fictional test data
 python scripts/run_demo.py              # full pipeline -> demo_output.json
-python -m pytest -q                     # 245 tests
+python -m pytest -q                     # 250 tests
 uvicorn sawazi.api:app --reload          # API at http://localhost:8000/docs
 ```
 
@@ -146,6 +148,22 @@ weak:
 
 Core-system guarantees count towards a guarantor's capacity for new loans, and are released when the loan is repaid.
 Re-uploading updates amounts. Only an upload marked "complete list" (`replace=true`) releases guarantees missing from it.
+
+## Board pack (Phase 3)
+
+The console's **Board pack** page (admins, accountants and approvers) downloads the month's pack as one HTML file. Open
+it in any browser and print it to PDF. It contains:
+- **In brief:** the headlines in plain words;
+- **portfolio quality:** classification, provisions, PAR by product, and the PAR trend;
+- **collections and payments**;
+- **lending:** applications, approvals and declines, and every loan approved with exceptions, with its reason and approvers;
+- **guarantor exposure**;
+- **governance:** rule, product, staff and API-key changes, and failed logins.
+
+Trends come from **snapshots** of portfolio quality. One is taken after every loans upload, or on demand. Give a
+month-end export its "as at" date when uploading it a few days late (`as_of` on the loans upload and on
+`POST /institutions/{id}/snapshots`), so it counts for the month it describes. Months without a snapshot are reported
+as missing, never estimated.
 
 ## Allocation rules
 
@@ -281,6 +299,8 @@ curl -X POST localhost:8000/institutions/1/admin -H "X-API-Key: $SAWAZI_API_KEY"
 | POST/GET | `/institutions/{id}/loan-applications/{app}/guarantors` | Ask a guarantor by SMS / list answers |
 | GET | `/institutions/{id}/members/{member_no}/guarantor-exposure` | What a member guarantees and can still guarantee |
 | GET | `/institutions/{id}/risk` | Classification and provisioning, PAR by product and employer, concentration, guarantor network, flags |
+| GET/POST | `/institutions/{id}/snapshots` | Portfolio snapshots (`as_of` to date one) |
+| GET | `/institutions/{id}/board-pack.html?month=YYYY-MM` | The month's board pack (download) |
 | GET/PUT | `/institutions/{id}/allocation-rules` | How payments are split (admin changes) |
 | POST | `/institutions/{id}/allocation-rules/preview` | Show how a member's payment would be split, changing nothing |
 | GET | `/institutions/{id}/members?q=` | Find a member by number, name, phone or ID number, with active loans |
@@ -312,6 +332,8 @@ sawazi/
   ussd.py              guarantor consent by USSD
   engine/appraisal.py  loan appraisal rules (pure)
   engine/exposure.py   risk report: classification, PAR, concentration, guarantor flags (pure)
+  risk.py              builds the risk report from the database
+  boardpack.py         portfolio snapshots and the monthly board pack (HTML, no scripts)
   daraja.py            M-Pesa Daraja C2B callback parsing, URL registration
   console/             staff web console (static HTML/CSS/JS served at /console/)
   importers/           CSV parsing for every source
@@ -327,7 +349,7 @@ tests/                 pytest suite
 
 ## Next
 
-Phase 3 in progress: the risk and exposure view is built. Next: monthly snapshots and the board pack, then regulatory returns, then the member app.
+Phase 3 in progress: the risk and exposure view and the board pack are built. Next: regulatory returns, then the member app.
 
 Before any real member data: ODPC registration and a data processing agreement with each pilot institution.
 

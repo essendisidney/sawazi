@@ -169,6 +169,7 @@ const VIEWS = {
   collections: { label: "Collections", need: "read", render: viewCollections },
   loans: { label: "Loans", need: "read", render: viewLoans },
   risk: { label: "Risk", need: "read", render: viewRisk },
+  board: { label: "Board pack", need: "read", render: viewBoard },
   upload: { label: "Upload", need: "reconcile", render: viewUpload },
   rules: { label: "Allocation rules", need: "read", render: viewRules },
   products: { label: "Products", need: "read", render: viewProducts },
@@ -558,6 +559,8 @@ function uploadPanel() {
   const employer = h("input", { type: "text", placeholder: "e.g. Tumaini Schools Ltd" });
   const period = h("input", { type: "month" });
   const checkoffFields = h("div", { class: "row-form" }, h("label", null, "Employer", employer), h("label", null, "Month", period));
+  const asOf = h("input", { type: "date", max: new Date().toISOString().slice(0, 10) });
+  const asOfRow = h("label", null, "Figures as at (for the board pack; leave empty for today)", asOf);
   const complete = h("input", { type: "checkbox" });
   const completeRow = h("label", { class: "check" }, complete, "This is the complete current list (release guarantees not in it)");
   const sync = () => {
@@ -566,6 +569,7 @@ function uploadPanel() {
     const co = kind.value.startsWith("checkoff");
     checkoffFields.hidden = !co; employer.required = co; period.required = co;
     completeRow.hidden = kind.value !== "core_guarantees";
+    asOfRow.hidden = kind.value !== "loans";
   };
   kind.addEventListener("change", sync);
   sync();
@@ -578,7 +582,8 @@ function uploadPanel() {
       const fd = new FormData();
       fd.append("file", file.files[0]);
       const params = kind.value.startsWith("checkoff") ? { employer: employer.value.trim(), period: period.value }
-        : kind.value === "core_guarantees" ? { replace: complete.checked } : {};
+        : kind.value === "core_guarantees" ? { replace: complete.checked }
+        : kind.value === "loans" && asOf.value ? { as_of: asOf.value } : {};
       const r = await api(`${inst()}/import/${kind.value}`, { method: "POST", form: fd, params });
       const parts = r.updated !== undefined ? [`${r.updated} members updated`]
         : [`${r.created} new`, `${r.skipped_duplicates} already in Sawazi`];
@@ -593,7 +598,7 @@ function uploadPanel() {
     });
   } },
     h("h2", null, "Upload a file"),
-    h("label", null, "What is it?", kind), help, checkoffFields, completeRow,
+    h("label", null, "What is it?", kind), help, checkoffFields, completeRow, asOfRow,
     h("label", null, "CSV file", file), btn, slot);
   return form;
 }
@@ -1179,6 +1184,48 @@ async function showExposure(memberNo) {
         h("td", { class: "n" }, r.at_risk_kes === undefined ? "–" : kes(r.at_risk_kes)), h("td", { class: "small" }, r.source === "core" ? "core system" : "Sawazi")))))) :
       h("p", { class: "muted" }, "Guarantees nobody's loan."));
   await confirmDialog(`${x.name} (${x.member_no}) as a guarantor`, body, "Close", { info: true });
+}
+
+// ------------------------------------------------------------------ board pack
+
+async function viewBoard() {
+  const snaps = await api(`${inst()}/snapshots`);
+  const now = new Date();
+  const month = h("input", { type: "month", value: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`,
+    max: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`, "aria-label": "Month" });
+  const slot = h("div");
+  const panel = h("section", { class: "panel pad stack" }, h("h2", null, "Monthly board pack"),
+    h("p", { class: "muted small" }, "One file the board can open in any browser and print to PDF: portfolio quality and its trend, collections, lending (including every loan approved with exceptions), guarantor exposure and governance changes."));
+  if (can("board_pack")) {
+    const download = h("button", { type: "button", class: "primary" }, "Download board pack");
+    download.addEventListener("click", () => busy(download, slot, async () => {
+      const r = await fetch(`${inst()}/board-pack.html?month=${encodeURIComponent(month.value)}`, { headers: { Authorization: `Bearer ${state.token}` } });
+      if (!r.ok) throw new ApiError(r.status, detailText(await r.json().catch(() => ({}))));
+      const a = h("a", { href: URL.createObjectURL(await r.blob()), download: `sawazi_board_pack_${month.value}.html` });
+      document.body.append(a); a.click(); a.remove();
+      slot.replaceChildren(note("ok", "Downloaded. Open it in a browser; use Print to save it as a PDF."));
+    }));
+    const snapDate = h("input", { type: "date", max: new Date().toISOString().slice(0, 10), "aria-label": "Snapshot as at" });
+    const snap = h("button", { type: "button" }, "Take snapshot");
+    snap.addEventListener("click", () => busy(snap, slot, async () => {
+      await api(`${inst()}/snapshots`, { method: "POST", params: { as_of: snapDate.value || null } }); route();
+    }));
+    panel.append(h("div", { class: "row-form" }, h("label", null, "Month", month), download), slot,
+      h("p", { class: "muted small" }, "Snapshots are dated by the figures they hold. After uploading a month-end loans export a few days late, give its month-end date."),
+      h("div", { class: "row-form" }, h("label", null, "Snapshot as at (empty = today)", snapDate), snap));
+  } else {
+    panel.append(note("info", "Admins, accountants and approvers can download the board pack."));
+  }
+  const table = h("section", { class: "panel" }, h("div", { class: "pad" }, h("h2", null, "Snapshots"),
+    h("p", { class: "muted small" }, "Taken after every loans upload and on demand. Board packs compare months using the last snapshot in each month; missing months are never filled in.")),
+    snaps.length === 0 ? h("div", { class: "empty" }, "No snapshots yet. Upload a loans export or take one now.") :
+      h("div", { class: "tbl-wrap" }, h("table", null,
+        h("thead", null, h("tr", null, h("th", null, "As at"), h("th", { class: "n" }, "Loans"), h("th", { class: "n" }, "Outstanding"),
+          h("th", { class: "n" }, "PAR 30"), h("th", { class: "n" }, "Provision"), h("th", { class: "n" }, "Flags"))),
+        h("tbody", null, snaps.map((x) => h("tr", null, h("td", { class: "num" }, x.as_of), h("td", { class: "n" }, x.loans),
+          h("td", { class: "n" }, kes(x.balance_kes)), h("td", { class: "n" }, pct(x.par30_pct)), h("td", { class: "n" }, kes(x.provision_kes)),
+          h("td", { class: "n" }, x.flags)))))));
+  return [h("div", { class: "head" }, h("h1", null, "Board pack")), panel, table];
 }
 
 // ------------------------------------------------------------------ go
