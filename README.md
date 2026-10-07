@@ -29,7 +29,7 @@ It sits beside any core banking system and works from the CSV/Excel exports ever
 pip install -r requirements.txt
 python scripts/make_sample_data.py      # fictional test data
 python scripts/run_demo.py              # full pipeline -> demo_output.json
-python -m pytest -q                     # 228 tests
+python -m pytest -q                     # 245 tests
 uvicorn sawazi.api:app --reload          # API at http://localhost:8000/docs
 ```
 
@@ -124,6 +124,28 @@ Try it in Taifa's USSD Sandbox Simulator first. Taifa bills once per session and
 wallet is empty, so keep it topped up.
 
 All of it is in the console (Loans, Products) and the audit log.
+
+## Risk and exposure (Phase 3)
+
+`GET /institutions/{id}/risk` and the console's **Risk** page show where the portfolio and the guarantor network are
+weak:
+
+- **Classification and provisioning:** loans in SASRA's five classes (performing, watch, substandard, doubtful, loss)
+  with the provision each needs. The rates are in `sawazi/engine/exposure.py`; check them against the current SASRA
+  form before filing.
+- **PAR** by product and by employer; the largest borrowers and their share of the portfolio.
+- **The guarantor network**, including guarantees already in the core system (upload them as "Guarantees from the
+  core system": Loan No, Guarantor Member No, Amount Guaranteed). A pledge Sawazi also recorded is never counted twice.
+- **Flags for a person to check:**
+  - guarantors who are behind on their own loans;
+  - pledges above deposits;
+  - one member backing many loans;
+  - members guaranteeing each other, or in a circle;
+  - loans in default whose guarantors are also behind;
+  - large borrowers (in books of 20 loans or more).
+
+Core-system guarantees count towards a guarantor's capacity for new loans, and are released when the loan is repaid.
+Re-uploading updates amounts. Only an upload marked "complete list" (`replace=true`) releases guarantees missing from it.
 
 ## Allocation rules
 
@@ -258,6 +280,7 @@ curl -X POST localhost:8000/institutions/1/admin -H "X-API-Key: $SAWAZI_API_KEY"
 | POST | `/institutions/{id}/loan-applications/export.csv` | Approved loans for the core system to disburse |
 | POST/GET | `/institutions/{id}/loan-applications/{app}/guarantors` | Ask a guarantor by SMS / list answers |
 | GET | `/institutions/{id}/members/{member_no}/guarantor-exposure` | What a member guarantees and can still guarantee |
+| GET | `/institutions/{id}/risk` | Classification and provisioning, PAR by product and employer, concentration, guarantor network, flags |
 | GET/PUT | `/institutions/{id}/allocation-rules` | How payments are split (admin changes) |
 | POST | `/institutions/{id}/allocation-rules/preview` | Show how a member's payment would be split, changing nothing |
 | GET | `/institutions/{id}/members?q=` | Find a member by number, name, phone or ID number, with active loans |
@@ -288,6 +311,7 @@ sawazi/
   guarantors.py        guarantor capacity, one-time links, PINs, consent page, release on repayment
   ussd.py              guarantor consent by USSD
   engine/appraisal.py  loan appraisal rules (pure)
+  engine/exposure.py   risk report: classification, PAR, concentration, guarantor flags (pure)
   daraja.py            M-Pesa Daraja C2B callback parsing, URL registration
   console/             staff web console (static HTML/CSS/JS served at /console/)
   importers/           CSV parsing for every source
@@ -303,7 +327,7 @@ tests/                 pytest suite
 
 ## Next
 
-Phase 2 is complete (go-live of USSD waits on a Taifa Mobile shortcode). Phase 3: exposure and risk view, board pack, SASRA/CBK returns, member app.
+Phase 3 in progress: the risk and exposure view is built. Next: monthly snapshots and the board pack, then regulatory returns, then the member app.
 
 Before any real member data: ODPC registration and a data processing agreement with each pilot institution.
 

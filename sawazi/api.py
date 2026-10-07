@@ -33,11 +33,11 @@ from .auth import API_KEY_ROLES, PERMISSIONS, ROLES, Principal, require
 from .db import get_session, init_db
 from .engine.checkoff import reconcile_checkoff
 from .engine.collections import build_queue, portfolio_at_risk
-from .engine import allocation, appraisal
+from .engine import allocation, appraisal, exposure
 from .engine.matching import allocate, run_matching
 from .importers import sources
 from .importers.common import norm_phone
-from .models import (Allocation, AllocationRules, ApiKey, Guarantee, LoanApplication, LoanDecision, LoanProduct, AuditEvent, ExceptionItem, Institution, Loan, Member, MpesaCallback,
+from .models import (Allocation, AllocationRules, ApiKey, CoreGuarantee, Guarantee, LoanApplication, LoanDecision, LoanProduct, AuditEvent, ExceptionItem, Institution, Loan, Member, MpesaCallback,
                      Reminder, SmsMessage, SmsOptOut, SmsSettings, StaffSession, StaffUser, Transaction)
 
 @asynccontextmanager
@@ -314,12 +314,16 @@ async def import_file(
     file: UploadFile = File(...),
     employer: str | None = Query(None, description="check-off imports only"),
     period: str | None = Query(None, pattern=r"^\d{4}-\d{2}$", description="YYYY-MM, check-off imports only"),
+    replace: bool = Query(False, description="core_guarantees only: the file is the complete current list"),
     s: Session = Depends(get_session),
     who: Principal = Depends(require("reconcile")),
 ):
     _inst(s, institution_id)
     content = await file.read()
     note = f"file {file.filename}"
+    if kind == "core_guarantees":
+        result = sources.import_core_guarantees(s, institution_id, content, replace=replace).as_dict()
+        return _audited(s, who, "import.core_guarantees", result, note + (", complete list" if replace else ""))
     if kind in IMPORTERS:
         result = IMPORTERS[kind](s, institution_id, content).as_dict()
         if kind == "loans":  # loans the core system now shows as repaid free their guarantors
@@ -1572,6 +1576,15 @@ def guarantor_exposure(institution_id: int, member_no: str, s: Session = Depends
             row |= {"loan_no": ln.loan_no, "loan_balance_kes": ln.balance_cents / 100,
                     "at_risk_kes": min(share, g.amount_cents) / 100}
         out.append(row)
+    for cg, ln, borrower in s.execute(
+            select(CoreGuarantee, Loan, Member).join(Loan, CoreGuarantee.loan_id == Loan.id)
+            .join(Member, Loan.member_id == Member.id)
+            .where(CoreGuarantee.institution_id == institution_id, CoreGuarantee.guarantor_member_id == m.id,
+                   CoreGuarantee.status == "active", guarantors.core_counts())):
+        share = -(-cg.amount_cents * max(ln.balance_cents, 0) // max(ln.principal_cents, 1))
+        out.append({"source": "core", "member_no": borrower.member_no, "name": borrower.name, "loan_no": ln.loan_no,
+                    "amount_kes": cg.amount_cents / 100, "status": "accepted", "loan_balance_kes": ln.balance_cents / 100,
+                    "at_risk_kes": min(share, cg.amount_cents) / 100})
     return {"member_no": m.member_no, "name": m.name,
             "deposits_kes": m.deposits_cents / 100 if m.deposits_cents is not None else None,
             "pledged_kes": guarantors.pledged_cents(s, institution_id, m.id) / 100,
@@ -1742,6 +1755,60 @@ async def ussd_callback(token: str, request: Request, s: Session = Depends(get_s
     # database work off the event loop
     reply = await run_in_threadpool(ussd.handle, s, session_id, phone, text, ip)
     return PlainTextResponse(reply, media_type="text/plain; charset=utf-8")
+
+
+# ---------------------------------------------------------------- exposure and risk
+
+def _pledges(s: Session, institution_id: int) -> list:
+    """Every live pledge: accepted in Sawazi (on a loan, or on an application still being decided) and active in
+    the core system (unless Sawazi recorded the same one)."""
+    out = [exposure.Pledge(g.guarantor_member_id, a.member_id, a.disbursed_loan_id, g.amount_cents, "sawazi")
+           for g, a in s.execute(select(Guarantee, LoanApplication)
+                                 .join(LoanApplication, Guarantee.application_id == LoanApplication.id)
+                                 .where(Guarantee.institution_id == institution_id, Guarantee.status == "accepted"))]
+    out += [exposure.Pledge(cg.guarantor_member_id, ln.member_id, ln.id, cg.amount_cents, "core")
+            for cg, ln in s.execute(select(CoreGuarantee, Loan).join(Loan, CoreGuarantee.loan_id == Loan.id)
+                                    .where(CoreGuarantee.institution_id == institution_id,
+                                           CoreGuarantee.status == "active", guarantors.core_counts()))]
+    return out
+
+
+def _risk_report(s: Session, institution_id: int) -> exposure.Report:
+    members = [exposure.MemberRow(m.id, m.member_no, m.name, m.deposits_cents, m.employer)
+               for m in s.scalars(select(Member).where(Member.institution_id == institution_id))]
+    loans = [exposure.LoanRow(ln.id, ln.loan_no, ln.member_id, ln.product, ln.balance_cents, ln.arrears_cents,
+                              ln.days_in_arrears)
+             for ln in s.scalars(select(Loan).where(Loan.institution_id == institution_id, Loan.status == "active"))]
+    return exposure.report(members, loans, _pledges(s, institution_id))
+
+
+def _kes_fields(d):
+    """cents -> KES and basis points -> percent, recursively, for the JSON the console reads."""
+    if isinstance(d, dict):
+        out = {}
+        for k, v in d.items():
+            if k.endswith("_cents"):
+                out[k[:-6] + "_kes"] = v / 100 if v is not None else None
+            elif k.endswith("_bps"):
+                out[k[:-4] + "_pct"] = v / 100
+            else:
+                out[k] = _kes_fields(v)
+        return out
+    if isinstance(d, list):
+        return [_kes_fields(x) for x in d]
+    return d
+
+
+@app.get("/institutions/{institution_id}/risk", dependencies=[Depends(require("read"))], tags=["risk"])
+def risk(institution_id: int, s: Session = Depends(get_session)):
+    """Loan classification and provisioning, PAR by product and employer, concentration, the guarantor network,
+    and flags for a person to look at."""
+    r = _risk_report(s, institution_id)
+    return _kes_fields({"portfolio": r.portfolio, "classification": r.classification,
+                        "par_by_product": r.par_by_product, "par_by_employer": r.par_by_employer,
+                        "concentration": r.concentration, "guarantors": r.guarantors,
+                        "flags": [{"kind": f.kind, "severity": f.severity, "member_nos": f.member_nos,
+                                   "amount_cents": f.amount_cents, "message": f.message} for f in r.flags]})
 
 
 # ---------------------------------------------------------------- staff web console

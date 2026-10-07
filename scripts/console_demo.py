@@ -57,6 +57,8 @@ def seed():
             upload("checkoff_schedule", f"checkoff_schedule_{slug}.csv", employer=employer, period="2026-09")
             upload("checkoff_remittance", f"checkoff_remittance_{slug}.csv", employer=employer, period="2026-09")
             c.post(f"/institutions/{iid}/checkoff/reconcile", params={"employer": employer, "period": "2026-09"})
+        if (DATA / "guarantees.csv").exists():
+            upload("core_guarantees", "guarantees.csv")
         c.post(f"/institutions/{iid}/match").raise_for_status()
         c.post(f"/institutions/{iid}/collections/queue").raise_for_status()
         for prod in [{"code": "DEV", "name": "Development Loan", "max_amount_kes": 3_000_000, "max_term_months": 48,

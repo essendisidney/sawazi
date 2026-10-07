@@ -12,6 +12,7 @@ when its "done when" is true.
 | 4 | Taifa Mobile SMS: number format and API key confirmed, one live test | Sidney (Taifa account) | Real SMS |
 | 5 | Taifa Mobile USSD: service code, sandbox run, gateway IPs | Sidney (Taifa account) | USSD consent |
 | 6 | Daraja C2B tested in the Safaricom sandbox | Sidney (Daraja app) | Real-time M-Pesa |
+| 7 | Core-system guarantee export, and SASRA classification rates checked | Sidney + pilot SACCO | Risk view |
 
 ---
 
@@ -169,3 +170,15 @@ Secrets go in environment variables or `.env` (gitignored), never in code.
 >
 > Thank you,
 > Sidney Essendi, Pesara
+
+## 7. Guarantees from the core system, and classification rates
+
+The risk view and guarantor capacity are only as complete as the guarantee list. Export every active guarantee from
+the core system (Loan No, Guarantor Member No, Amount Guaranteed) and upload it as "Guarantees from the core system",
+ticking "complete list" when it is the whole book.
+
+The loan classes and provision rates in `sawazi/engine/exposure.py` (`CLASSES`: 1%, 5%, 25%, 50%, 100% for
+performing, watch 1-30 days, substandard 31-180, doubtful 181-360, loss over 360) must match the current SASRA form
+before the provision figure is used for anything official.
+
+**Done when:** the pilot SACCO's guarantee export uploads with no rejected rows, and the classes and rates are confirmed.

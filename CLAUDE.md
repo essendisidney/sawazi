@@ -17,8 +17,17 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 ## Roadmap
 - Phase 1 DONE: repayment matching, check-off reconciliation, collections, console, SMS, C2B, PostgreSQL.
 - Phase 2 DONE: loan factory (digital applications, appraisal), digital guarantor network (SMS link + USSD)
-- Phase 3 (next): exposure/risk view, board pack, SASRA/CBK return generation, member app
+- Phase 3 (current): exposure/risk view, board pack, SASRA/CBK return generation, member app
 - Phase 4: cross-institution network (guarantee exposure, sector benchmarks), MFI group lending, regional
+
+## Phase 3 — status
+1. Risk and exposure view DONE (`sawazi/engine/exposure.py`, `GET /risk`, console Risk page). Core-system guarantees
+   import (`core_guarantees`, `CoreGuarantee`); `guarantors.core_counts()` makes Sawazi's record win, so a pledge is
+   never counted twice; pledges from both count towards capacity
+2. Next: monthly snapshots + board pack (trends need history)
+3. Then: regulatory returns. Ask first whether pilots are SASRA deposit-taking SACCOs or MFIs (CBK); SASRA
+   classification rates in `exposure.CLASSES` must be checked against the current SASRA form
+4. Then: member app (ask about its form first)
 
 ## Phase 2 — done
 1. Member balances and pay DONE (members export columns + `member_balances` import; unknown is never zero)
