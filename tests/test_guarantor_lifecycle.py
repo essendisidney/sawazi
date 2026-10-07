@@ -188,3 +188,38 @@ def test_sms_mentions_the_ussd_code_once_there_is_one(ussd, monkeypatch):
     monkeypatch.setenv("SAWAZI_USSD_CODE", "*483*77#")
     ask(c, officer, app_id, "G2", 10_000)
     assert "or dial *483*77# to accept or decline" in phone.sent[-1][1]
+
+
+# ---------------------------------------------------------------- Taifa Mobile's USSD format
+
+from sawazi.api import ussd_input  # noqa: E402
+
+
+@pytest.mark.parametrize("raw,shortcut,expected", [
+    ("", None, ""), ("1*1*4321", None, "1*1*4321"),
+    ("100", "100", ""), ("100*1", "100", "1"), ("100*1*1*4321", "100", "1*1*4321"),
+    ("1**2*", None, "1*2"),  # empty parts are ignored, as in Taifa's sample handler
+    ("1*100", "100", "1*100"),  # only a leading shortcut is stripped
+])
+def test_ussd_input(raw, shortcut, expected):
+    assert ussd_input(raw, shortcut) == expected
+
+
+def test_taifa_format_get_json_form_and_shared_shortcut(ussd, monkeypatch):
+    c, Session, _, app_id, _, officer, _ = ussd
+    ask(c, officer, app_id, "G1", 200_000)
+    url = f"/callbacks/ussd/{USSD_TOKEN}"
+    base = {"MSISDN": "254711000011", "SESSION_ID": "1732612345", "SERVICE_CODE": "*252*100#"}
+
+    r = c.get(url, params={**base, "USSD_STRING": ""})  # GET with a query string
+    assert r.headers["content-type"].startswith("text/plain") and r.text.startswith("CON Guarantee requests:")
+    assert c.post(url, json={**base, "USSD_STRING": "1"}).text.endswith("1. Accept\n2. Decline")  # JSON
+    assert c.post(url, data={**base, "USSD_STRING": "1*1"}).text.startswith("CON To confirm")  # form
+
+    monkeypatch.setenv("SAWAZI_USSD_SHORTCUT", "100")  # shared code *252*100#: "100" leads every path
+    assert c.post(url, files={k: (None, v) for k, v in {**base, "USSD_STRING": "100*1"}.items()}).text.endswith(
+        "1. Accept\n2. Decline")  # multipart
+    r = c.post(url, json={**base, "USSD_STRING": "100*1*1*1234"})
+    assert r.text.startswith("END Accepted. You now guarantee KES 200,000")
+    with Session() as s:
+        assert s.scalar(select(Guarantee.status)) == "accepted"

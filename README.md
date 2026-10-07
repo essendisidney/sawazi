@@ -29,7 +29,7 @@ It sits beside any core banking system and works from the CSV/Excel exports ever
 pip install -r requirements.txt
 python scripts/make_sample_data.py      # fictional test data
 python scripts/run_demo.py              # full pipeline -> demo_output.json
-python -m pytest -q                     # 220 tests
+python -m pytest -q                     # 228 tests
 uvicorn sawazi.api:app --reload          # API at http://localhost:8000/docs
 ```
 
@@ -112,10 +112,16 @@ decision; the core system disburses from the hand-over file, and the loan comes 
 
 **USSD consent** works on any phone. The guarantor dials the shortcode, picks a request, and accepts by entering the
 last 4 digits of their ID number (the phone number itself comes from the network). The list a guarantor saw is saved
-per session, so an answer always lands on the request they read. Settings: `SAWAZI_USSD_CALLBACK_TOKEN` (register
-`https://<host>/callbacks/ussd/<token>` as the shortcode's callback), optional `SAWAZI_USSD_ALLOWED_IPS`, and
-`SAWAZI_USSD_CODE` (e.g. `*483*77#`) so guarantor SMS mention it. It uses the common Kenyan aggregator format
-(`sessionId`, `phoneNumber`, `text`; replies `CON`/`END`); confirm Taifa Mobile's format when the shortcode is issued.
+per session, so an answer always lands on the request they read. It follows Taifa Mobile's USSD gateway
+([documentation](https://ussdbeta.taifamobile.co.ke/documentation)): GET or POST (JSON, form or multipart) with
+`MSISDN`, `SESSION_ID`, `SERVICE_CODE`, `USSD_STRING`; replies are plain text starting `CON` or `END`. Settings:
+- `SAWAZI_USSD_CALLBACK_TOKEN`: register `https://<host>/callbacks/ussd/<token>` as the service's callback URL
+- `SAWAZI_USSD_SHORTCUT`: on a shared code such as `*252*100#`, the routing shortcut (`100`) that starts every
+  `USSD_STRING`; leave unset on a dedicated code
+- `SAWAZI_USSD_CODE`: the code members dial (e.g. `*252*100#`), so guarantor SMS mention it
+- `SAWAZI_USSD_ALLOWED_IPS` (optional): Taifa's gateway addresses, once they confirm them
+Try it in Taifa's USSD Sandbox Simulator first. Taifa bills once per session and blocks sessions when the USSD
+wallet is empty, so keep it topped up.
 
 All of it is in the console (Loans, Products) and the audit log.
 

@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -1699,11 +1700,22 @@ def consent_decline(token: str, request: Request, s: Session = Depends(get_sessi
 
 
 # ---------------------------------------------------------------- USSD guarantor consent
-# Register https://<host>/callbacks/ussd/<SAWAZI_USSD_CALLBACK_TOKEN> as the shortcode's callback.
+# Taifa Mobile USSD (ussdbeta.taifamobile.co.ke/documentation): GET query, or POST as JSON, form or multipart,
+# with MSISDN, SESSION_ID, SERVICE_CODE, USSD_STRING; reply text/plain starting CON or END.
+# Register https://<host>/callbacks/ussd/<SAWAZI_USSD_CALLBACK_TOKEN> as the service's callback URL.
+# On a shared code the first part of USSD_STRING is the routing shortcut (e.g. "100" for *252*100#):
+# set SAWAZI_USSD_SHORTCUT to it so it is not read as a menu choice. A dedicated code has no shortcut.
 
-@app.post("/callbacks/ussd/{token}", include_in_schema=False)
-def ussd_callback(token: str, request: Request, sessionId: str = Form(""), phoneNumber: str = Form(""),  # noqa: N803
-                  text: str = Form(""), s: Session = Depends(get_session)):
+def ussd_input(raw: str, shortcut: str | None) -> str:
+    """The guarantor's own choices from the raw input path, e.g. "100*1*4321" -> "1*4321" (shortcut 100)."""
+    parts = [p.strip() for p in (raw or "").split("*") if p.strip() != ""]  # as Taifa's sample: ignore empties
+    if shortcut and parts and parts[0] == shortcut:
+        parts = parts[1:]
+    return "*".join(parts)
+
+
+@app.api_route("/callbacks/ussd/{token}", methods=["GET", "POST"], include_in_schema=False)
+async def ussd_callback(token: str, request: Request, s: Session = Depends(get_session)):
     expected = os.getenv("SAWAZI_USSD_CALLBACK_TOKEN")
     if not expected or not hmac.compare_digest(token, expected):
         raise HTTPException(404, "not found")
@@ -1711,8 +1723,25 @@ def ussd_callback(token: str, request: Request, sessionId: str = Form(""), phone
     allowed = {x.strip() for x in os.getenv("SAWAZI_USSD_ALLOWED_IPS", "").split(",") if x.strip()}
     if allowed and ip not in allowed:
         raise HTTPException(404, "not found")
-    reply = ussd.handle(s, sessionId[:100], norm_phone(phoneNumber), text[:200], ip)
-    return PlainTextResponse(reply)
+    fields: dict = dict(request.query_params)
+    if request.method == "POST":
+        if "json" in request.headers.get("content-type", ""):
+            body = await request.json()
+            fields |= body if isinstance(body, dict) else {}
+        else:
+            fields |= {k: v for k, v in (await request.form()).items() if isinstance(v, str)}
+
+    def field(*names: str) -> str:
+        return next((str(fields[n]) for n in names if fields.get(n) not in (None, "")), "")
+
+    session_id = field("SESSION_ID", "sessionId")[:100]
+    phone = norm_phone(field("MSISDN", "phoneNumber"))
+    raw = field("USSD_STRING", "text")[:200]
+    text = ussd_input(raw, os.getenv("SAWAZI_USSD_SHORTCUT", "").strip() or None)
+
+    # database work off the event loop
+    reply = await run_in_threadpool(ussd.handle, s, session_id, phone, text, ip)
+    return PlainTextResponse(reply, media_type="text/plain; charset=utf-8")
 
 
 # ---------------------------------------------------------------- staff web console

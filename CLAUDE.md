@@ -31,8 +31,9 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
    its guarantees (`guarantors.release_repaid`); written-off loans keep their guarantors liable
 7. USSD consent DONE (`sawazi/ussd.py`): last 4 ID digits to accept; the shown list is saved per session so an
    answer always lands on the request that was read. Same `guarantors.record_answer` (and lock) as the web page
-- Before go-live: Taifa USSD shortcode + confirm their callback format (built for the common sessionId/phoneNumber/
-  text, CON/END format); native-speaker check of the Swahili on the guarantor page
+- USSD follows Taifa's gateway format (MSISDN, SESSION_ID, SERVICE_CODE, USSD_STRING; CON/END), GET or POST.
+  Before go-live: a Taifa USSD service code (shared: set `SAWAZI_USSD_SHORTCUT`), a run in their Sandbox Simulator,
+  their gateway IPs for `SAWAZI_USSD_ALLOWED_IPS`; native-speaker check of the Swahili on the guarantor page
 - Moved to Phase 3: member self-service applications (member app)
 
 ## Phase 1 — done
