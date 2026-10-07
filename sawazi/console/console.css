@@ -188,3 +188,4 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
 .out-fails, .app-declined, .gs-declined { background: var(--bad-soft); color: var(--bad); }
 .out-incomplete, .app-submitted, .gs-requested { background: var(--warn-soft); color: var(--warn); }
 .app-exported { background: var(--info-soft); }
+.gs-released, .gs-cancelled, .gs-expired { background: var(--info-soft); }
