@@ -35,6 +35,7 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
   Before go-live: a Taifa USSD service code (shared: set `SAWAZI_USSD_SHORTCUT`), a run in their Sandbox Simulator,
   their gateway IPs for `SAWAZI_USSD_ALLOWED_IPS`; native-speaker check of the Swahili on the guarantor page
 - Moved to Phase 3: member self-service applications (member app)
+- Pre-pilot items (none are code) are tracked in `docs/PILOT_CHECKLIST.md`; keep it current
 
 ## Phase 1 — done
 1. Staff auth DONE: users, roles, per-institution scoping, per-institution API keys (`sawazi/auth.py`, role matrix in `PERMISSIONS`, human-only actions in `HUMAN_ONLY`)

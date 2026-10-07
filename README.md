@@ -306,3 +306,5 @@ tests/                 pytest suite
 Phase 2 is complete (go-live of USSD waits on a Taifa Mobile shortcode). Phase 3: exposure and risk view, board pack, SASRA/CBK returns, member app.
 
 Before any real member data: ODPC registration and a data processing agreement with each pilot institution.
+
+Everything to settle before a pilot, with owners and how to check each item: [docs/PILOT_CHECKLIST.md](docs/PILOT_CHECKLIST.md).
