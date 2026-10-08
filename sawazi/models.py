@@ -455,3 +455,35 @@ class UssdSession(Base):
     phone: Mapped[str] = mapped_column(String(20))
     guarantee_ids: Mapped[list] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class CoreGuarantee(Base):
+    """A guarantee recorded in the core banking system (most of a SACCO's book predates Sawazi).
+    Where Sawazi itself recorded the same guarantor on the same loan, Sawazi's record counts and this one is
+    ignored, so a pledge is never counted twice."""
+
+    __tablename__ = "core_guarantees"
+    __table_args__ = (UniqueConstraint("institution_id", "loan_id", "guarantor_member_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    loan_id: Mapped[int] = mapped_column(ForeignKey("loans.id"), index=True)
+    guarantor_member_id: Mapped[int] = mapped_column(ForeignKey("members.id"), index=True)
+    amount_cents: Mapped[int] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(String(20), index=True)  # active | released
+    imported_at: Mapped[datetime] = mapped_column(DateTime)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class PortfolioSnapshot(Base):
+    """Portfolio quality as it stood on a date: what board packs compare month to month. One per institution per
+    day (a later snapshot the same day replaces it). Never back-filled: a month without one stays missing."""
+
+    __tablename__ = "portfolio_snapshots"
+    __table_args__ = (UniqueConstraint("institution_id", "as_of"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    as_of: Mapped[date] = mapped_column(Date)
+    taken_at: Mapped[datetime] = mapped_column(DateTime)
+    figures: Mapped[dict] = mapped_column(JSON)

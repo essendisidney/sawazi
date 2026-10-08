@@ -17,8 +17,22 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 ## Roadmap
 - Phase 1 DONE: repayment matching, check-off reconciliation, collections, console, SMS, C2B, PostgreSQL.
 - Phase 2 DONE: loan factory (digital applications, appraisal), digital guarantor network (SMS link + USSD)
-- Phase 3 (next): exposure/risk view, board pack, SASRA/CBK return generation, member app
+- Phase 3 (current): exposure/risk view, board pack, SASRA/CBK return generation, member app
 - Phase 4: cross-institution network (guarantee exposure, sector benchmarks), MFI group lending, regional
+
+## Phase 3 — status
+1. Risk and exposure view DONE (`sawazi/engine/exposure.py`, `GET /risk`, console Risk page). Core-system guarantees
+   import (`core_guarantees`, `CoreGuarantee`); `guarantors.core_counts()` makes Sawazi's record win, so a pledge is
+   never counted twice; pledges from both count towards capacity
+2. Snapshots + board pack DONE (`sawazi/boardpack.py`): snapshots dated by the figures' as-at date (loans upload
+   `as_of`), never back-filled; pack is one escaped HTML file with an In brief summary, SVG charts, governance in words
+3. Regulatory returns: pilots are SASRA deposit-taking SACCOs. Form 4 WORKING SCHEDULE DONE (`sawazi/returns.py`,
+   console Returns page, loan-level CSV): a working paper, never presented as the official form. Waiting on Sidney for
+   SASRA's official Form 4 (and Form 3 deposit return) templates; build the exact layout only from the real template,
+   never from memory. Open policy questions: netting deposits before provisioning; rescheduled-loan classification.
+   `exposure.CLASSES` rates (1/5/25/50/100%) match the regulation text for the first three and a CPA summary for the
+   rest; confirm against the gazetted text
+4. Then: member app (ask about its form first)
 
 ## Phase 2 — done
 1. Member balances and pay DONE (members export columns + `member_balances` import; unknown is never zero)
@@ -35,6 +49,7 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
   Before go-live: a Taifa USSD service code (shared: set `SAWAZI_USSD_SHORTCUT`), a run in their Sandbox Simulator,
   their gateway IPs for `SAWAZI_USSD_ALLOWED_IPS`; native-speaker check of the Swahili on the guarantor page
 - Moved to Phase 3: member self-service applications (member app)
+- Pre-pilot items (none are code) are tracked in `docs/PILOT_CHECKLIST.md`; keep it current
 
 ## Phase 1 — done
 1. Staff auth DONE: users, roles, per-institution scoping, per-institution API keys (`sawazi/auth.py`, role matrix in `PERMISSIONS`, human-only actions in `HUMAN_ONLY`)
@@ -46,7 +61,7 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 7. Alembic + PostgreSQL DONE (`migrations/`, `alembic upgrade head` on deploy; API also migrates on start). Suite passes on PostgreSQL 16 (`SAWAZI_TEST_DB_URL`)
 
 ## Stack and conventions
-- FastAPI + SQLAlchemy 2.0 (typed `Mapped[]` models) + pydantic v2. SQLite locally, PostgreSQL in production via `SAWAZI_DB_URL`.
+- Python 3.11+. FastAPI + SQLAlchemy 2.0 (typed `Mapped[]` models) + pydantic v2. SQLite locally, PostgreSQL in production via `SAWAZI_DB_URL`.
 - Money is ALWAYS integer cents (`*_cents`, `BigInteger` columns). Never floats for stored money.
 - Every table has `institution_id` (multi-tenant). Every query must filter by it. Never leak data across institutions.
 - Imports must be idempotent: re-uploading a file never double-counts (unique on institution + source + reference).

@@ -25,11 +25,13 @@ It sits beside any core banking system and works from the CSV/Excel exports ever
 
 ## Run it
 
+Python 3.11 or later.
+
 ```bash
 pip install -r requirements.txt
 python scripts/make_sample_data.py      # fictional test data
 python scripts/run_demo.py              # full pipeline -> demo_output.json
-python -m pytest -q                     # 228 tests
+python -m pytest -q                     # 260 tests
 uvicorn sawazi.api:app --reload          # API at http://localhost:8000/docs
 ```
 
@@ -124,6 +126,57 @@ Try it in Taifa's USSD Sandbox Simulator first. Taifa bills once per session and
 wallet is empty, so keep it topped up.
 
 All of it is in the console (Loans, Products) and the audit log.
+
+## Risk and exposure (Phase 3)
+
+`GET /institutions/{id}/risk` and the console's **Risk** page show where the portfolio and the guarantor network are
+weak:
+
+- **Classification and provisioning:** loans in SASRA's five classes (performing, watch, substandard, doubtful, loss)
+  with the provision each needs. The rates are in `sawazi/engine/exposure.py`; check them against the current SASRA
+  form before filing.
+- **PAR** by product and by employer; the largest borrowers and their share of the portfolio.
+- **The guarantor network**, including guarantees already in the core system (upload them as "Guarantees from the
+  core system": Loan No, Guarantor Member No, Amount Guaranteed). A pledge Sawazi also recorded is never counted twice.
+- **Flags for a person to check:**
+  - guarantors who are behind on their own loans;
+  - pledges above deposits;
+  - one member backing many loans;
+  - members guaranteeing each other, or in a circle;
+  - loans in default whose guarantors are also behind;
+  - large borrowers (in books of 20 loans or more).
+
+Core-system guarantees count towards a guarantor's capacity for new loans, and are released when the loan is repaid.
+Re-uploading updates amounts. Only an upload marked "complete list" (`replace=true`) releases guarantees missing from it.
+
+## Board pack (Phase 3)
+
+The console's **Board pack** page (admins, accountants and approvers) downloads the month's pack as one HTML file. Open
+it in any browser and print it to PDF. It contains:
+- **In brief:** the headlines in plain words;
+- **portfolio quality:** classification, provisions, PAR by product, and the PAR trend;
+- **collections and payments**;
+- **lending:** applications, approvals and declines, and every loan approved with exceptions, with its reason and approvers;
+- **guarantor exposure**;
+- **governance:** rule, product, staff and API-key changes, and failed logins.
+
+Trends come from **snapshots** of portfolio quality. One is taken after every loans upload, or on demand. Give a
+month-end export its "as at" date when uploading it a few days late (`as_of` on the loans upload and on
+`POST /institutions/{id}/snapshots`), so it counts for the month it describes. Months without a snapshot are reported
+as missing, never estimated.
+
+## SASRA returns (Phase 3)
+
+The console's **Returns** page (admins and accountants) has a **working schedule for SASRA Form 4**, the risk
+classification of assets and provisioning, due quarterly by the 15th of the following month:
+- loans by class, with outstanding balance, rate and required provision;
+- non-performing loans and their share of the book;
+- interest to suspend on substandard, doubtful and loss loans, from the interest arrears in the loans export;
+- a loan-by-loan CSV that traces every total.
+
+It is a working paper for filling SASRA's template, not the official form. Upload the quarter-end loans export with
+its "as at" date, then download straight away. Classes and rates (1%, 5%, 25%, 50%, 100% for 0, 1-30, 31-180,
+181-360 and 360+ days) must be confirmed against the current regulations before filing.
 
 ## Allocation rules
 
@@ -258,6 +311,10 @@ curl -X POST localhost:8000/institutions/1/admin -H "X-API-Key: $SAWAZI_API_KEY"
 | POST | `/institutions/{id}/loan-applications/export.csv` | Approved loans for the core system to disburse |
 | POST/GET | `/institutions/{id}/loan-applications/{app}/guarantors` | Ask a guarantor by SMS / list answers |
 | GET | `/institutions/{id}/members/{member_no}/guarantor-exposure` | What a member guarantees and can still guarantee |
+| GET | `/institutions/{id}/risk` | Classification and provisioning, PAR by product and employer, concentration, guarantor network, flags |
+| GET/POST | `/institutions/{id}/snapshots` | Portfolio snapshots (`as_of` to date one) |
+| GET | `/institutions/{id}/board-pack.html?month=YYYY-MM` | The month's board pack (download) |
+| GET | `/institutions/{id}/returns/form4` and `form4.csv` | SASRA Form 4 working schedule, and every loan behind it |
 | GET/PUT | `/institutions/{id}/allocation-rules` | How payments are split (admin changes) |
 | POST | `/institutions/{id}/allocation-rules/preview` | Show how a member's payment would be split, changing nothing |
 | GET | `/institutions/{id}/members?q=` | Find a member by number, name, phone or ID number, with active loans |
@@ -288,6 +345,10 @@ sawazi/
   guarantors.py        guarantor capacity, one-time links, PINs, consent page, release on repayment
   ussd.py              guarantor consent by USSD
   engine/appraisal.py  loan appraisal rules (pure)
+  engine/exposure.py   risk report: classification, PAR, concentration, guarantor flags (pure)
+  risk.py              builds the risk report from the database
+  boardpack.py         portfolio snapshots and the monthly board pack (HTML, no scripts)
+  returns.py           SASRA return working papers (Form 4 schedule)
   daraja.py            M-Pesa Daraja C2B callback parsing, URL registration
   console/             staff web console (static HTML/CSS/JS served at /console/)
   importers/           CSV parsing for every source
@@ -303,6 +364,8 @@ tests/                 pytest suite
 
 ## Next
 
-Phase 2 is complete (go-live of USSD waits on a Taifa Mobile shortcode). Phase 3: exposure and risk view, board pack, SASRA/CBK returns, member app.
+Phase 3 in progress: the risk and exposure view, board pack and Form 4 working schedule are built. Waiting on SASRA's official Form 4 (and Form 3) templates to fill their exact layout; then the member app.
 
 Before any real member data: ODPC registration and a data processing agreement with each pilot institution.
+
+Everything to settle before a pilot, with owners and how to check each item: [docs/PILOT_CHECKLIST.md](docs/PILOT_CHECKLIST.md).

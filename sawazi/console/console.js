@@ -27,8 +27,9 @@ function h(tag, props, ...kids) {
   return el;
 }
 
-const kesFmt = new Intl.NumberFormat("en-KE", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
-const kes = (v) => `KES ${kesFmt.format(v || 0)}`;
+const kesWhole = new Intl.NumberFormat("en-KE", { maximumFractionDigits: 0 });
+const kesCents = new Intl.NumberFormat("en-KE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const kes = (v) => `KES ${(Number.isInteger(v || 0) ? kesWhole : kesCents).format(v || 0)}`;
 function when(iso) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -95,7 +96,7 @@ async function busy(button, slot, fn) {
 }
 
 /** A modal confirmation. Resolves true only on an explicit "yes". */
-function confirmDialog(title, body, yesLabel, { danger = false } = {}) {
+function confirmDialog(title, body, yesLabel, { danger = false, info = false } = {}) {
   return new Promise((resolve) => {
     const dlg = h("dialog", { "aria-labelledby": "dlg-title" });
     const close = (v) => { dlg.close(); dlg.remove(); resolve(v); };
@@ -103,7 +104,7 @@ function confirmDialog(title, body, yesLabel, { danger = false } = {}) {
       h("h2", { id: "dlg-title" }, title),
       body,
       h("div", { class: "actions" },
-        h("button", { type: "button", onclick: () => close(false) }, "Cancel"),
+        info ? null : h("button", { type: "button", onclick: () => close(false) }, "Cancel"),
         h("button", { type: "button", class: danger ? "primary danger" : "primary", onclick: () => close(true) }, yesLabel))));
     dlg.addEventListener("cancel", (e) => { e.preventDefault(); close(false); });
     document.body.append(dlg);
@@ -167,6 +168,9 @@ const VIEWS = {
   exceptions: { label: "Exceptions", need: "read", render: viewExceptions, badge: () => state.counts?.other },
   collections: { label: "Collections", need: "read", render: viewCollections },
   loans: { label: "Loans", need: "read", render: viewLoans },
+  risk: { label: "Risk", need: "read", render: viewRisk },
+  board: { label: "Board pack", need: "read", render: viewBoard },
+  returns: { label: "Returns", need: "returns", render: viewReturns },
   upload: { label: "Upload", need: "reconcile", render: viewUpload },
   rules: { label: "Allocation rules", need: "read", render: viewRules },
   products: { label: "Products", need: "read", render: viewProducts },
@@ -536,6 +540,7 @@ const IMPORTS = [
   ["checkoff_remittance", "Check-off remittance", "What the employer actually paid. Needs employer and month."],
   ["checkoff_schedule", "Check-off schedule", "What was due from the employer. Needs employer and month."],
   ["members", "Members", "Export from the core banking system. Date joined, deposits, share capital and pay columns are read if present."],
+  ["core_guarantees", "Guarantees from the core system", "Loan No, Guarantor Member No, Amount Guaranteed. Tick \"complete list\" to release guarantees no longer in the file."],
   ["member_balances", "Member balances or payroll", "Deposits and share capital (monthly), or gross and net pay from payroll, for existing members."],
   ["loans", "Loans", "Export from the core banking system."],
 ];
@@ -555,11 +560,17 @@ function uploadPanel() {
   const employer = h("input", { type: "text", placeholder: "e.g. Tumaini Schools Ltd" });
   const period = h("input", { type: "month" });
   const checkoffFields = h("div", { class: "row-form" }, h("label", null, "Employer", employer), h("label", null, "Month", period));
+  const asOf = h("input", { type: "date", max: new Date().toISOString().slice(0, 10) });
+  const asOfRow = h("label", null, "Figures as at (for the board pack; leave empty for today)", asOf);
+  const complete = h("input", { type: "checkbox" });
+  const completeRow = h("label", { class: "check" }, complete, "This is the complete current list (release guarantees not in it)");
   const sync = () => {
     const [, , text] = IMPORTS.find(([k]) => k === kind.value);
     help.textContent = text;
     const co = kind.value.startsWith("checkoff");
     checkoffFields.hidden = !co; employer.required = co; period.required = co;
+    completeRow.hidden = kind.value !== "core_guarantees";
+    asOfRow.hidden = kind.value !== "loans";
   };
   kind.addEventListener("change", sync);
   sync();
@@ -571,11 +582,15 @@ function uploadPanel() {
     busy(btn, slot, async () => {
       const fd = new FormData();
       fd.append("file", file.files[0]);
-      const params = kind.value.startsWith("checkoff") ? { employer: employer.value.trim(), period: period.value } : {};
+      const params = kind.value.startsWith("checkoff") ? { employer: employer.value.trim(), period: period.value }
+        : kind.value === "core_guarantees" ? { replace: complete.checked }
+        : kind.value === "loans" && asOf.value ? { as_of: asOf.value } : {};
       const r = await api(`${inst()}/import/${kind.value}`, { method: "POST", form: fd, params });
       const parts = r.updated !== undefined ? [`${r.updated} members updated`]
         : [`${r.created} new`, `${r.skipped_duplicates} already in Sawazi`];
       if (r.rejected_count) parts.push(`${plural(r.rejected_count, "row")} need a look (listed below)`);
+      if (r.released) parts.push(`${r.released} guarantees no longer in the core system released`);
+      if (r.guarantees_released) parts.push(`${r.guarantees_released} guarantees released on repaid loans`);
       if (r.callbacks_confirmed) parts.push(`${r.callbacks_confirmed} real-time payments confirmed`);
       if (r.callbacks_mismatched) parts.push(`${r.callbacks_mismatched} real-time payments DISAGREE with the statement (see Exceptions)`);
       slot.replaceChildren(note(r.callbacks_mismatched || r.rejected_count ? "warn" : "ok", `${file.files[0].name}: ${parts.join(", ")}.`),
@@ -584,7 +599,7 @@ function uploadPanel() {
     });
   } },
     h("h2", null, "Upload a file"),
-    h("label", null, "What is it?", kind), help, checkoffFields,
+    h("label", null, "What is it?", kind), help, checkoffFields, completeRow, asOfRow,
     h("label", null, "CSV file", file), btn, slot);
   return form;
 }
@@ -1076,6 +1091,185 @@ function productForm(p) {
     L("Two approvers above (KES)", f.second_approval_above_kes),
     h("label", { class: "check" }, active, "Active (new applications can use it)"),
     slot, h("div", { class: "actions" }, p ? h("a", { href: "#/products", class: "btn" }, "Cancel") : null, save));
+}
+
+// ------------------------------------------------------------------ risk and exposure
+
+const FLAG_LABEL = {
+  guarantor_in_arrears: "Guarantor is behind", over_pledged: "Pledged above deposits", many_guarantees: "Backs many loans",
+  mutual_guarantee: "Guarantee each other", guarantee_circle: "Guarantee circle", chain_default: "Defaulter's guarantors also behind",
+  concentration: "Large borrower",
+};
+const CLASS_LABEL = { performing: "Performing", watch: "Watch", substandard: "Substandard", doubtful: "Doubtful", loss: "Loss" };
+const pct = (v) => `${(v || 0).toFixed(1)}%`;
+
+async function viewRisk() {
+  const r = await api(`${inst()}/risk`);
+  const p = r.portfolio, g = r.guarantors;
+  const kpi = (label, value, sub, bad) => h("div", { class: "kpi" },
+    h("span", { class: "eyebrow" }, label), h("span", { class: bad ? "v bad" : "v" }, value), h("span", { class: "s" }, sub));
+  const high = r.flags.filter((f) => f.severity === "high").length;
+  const kpis = h("div", { class: "kpis" },
+    kpi("Provision needed", kes(p.provision_kes), `on ${kes(p.balance_kes)} outstanding, ${p.loans} loans`),
+    kpi("PAR 30", pct(p.par30_pct), `PAR 1 ${pct(p.par1_pct)} · PAR 90 ${pct(p.par90_pct)}`, p.par30_pct > 5),
+    kpi("Guaranteed", kes(g.pledged_kes), `${g.members_guaranteeing} members guaranteeing`),
+    kpi("Guarantees on loans behind", kes(g.on_loans_behind_kes), "what recovery may fall on guarantors", g.on_loans_behind_kes > 0),
+    kpi("Flags", String(r.flags.length), high ? `${high} high` : "none high", high > 0));
+
+  const counts = {};
+  r.flags.forEach((f) => { counts[f.kind] = (counts[f.kind] || 0) + 1; });
+  let showing = "all";
+  const list = h("div", { class: "list" });
+  const chips = h("div", { class: "chips pad", role: "group", "aria-label": "Filter flags" });
+  const draw = () => {
+    const shown = r.flags.filter((f) => showing === "all" || f.kind === showing);
+    list.replaceChildren(...(shown.length ? shown.slice(0, 100).map(flagItem) : [h("div", { class: "empty" }, "No warning signs in the portfolio or the guarantor network.")]));
+    chips.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.k === showing)));
+  };
+  chips.append(...[["all", `All (${r.flags.length})`], ...Object.entries(counts).map(([k, n]) => [k, `${FLAG_LABEL[k] || k} (${n})`])]
+    .map(([k, label]) => h("button", { type: "button", "data-k": k, onclick: () => { showing = k; draw(); } }, label)));
+  const flagItem = (f) => h("article", { class: `item sev-${f.severity}` },
+        h("span", { class: "stripe" }),
+        h("div", { class: "item-body" },
+          h("div", { class: "item-top" }, h("span", { class: "eyebrow" }, `${FLAG_LABEL[f.kind] || f.kind} · ${f.severity}`),
+            f.amount_kes ? h("span", { class: "amt" }, kes(f.amount_kes)) : null),
+          h("p", { class: "detail" }, f.message),
+          h("div", { class: "actions" }, f.member_nos.map((no) => h("button", { type: "button", class: "link small",
+            onclick: () => showExposure(no) }, `${no}: guarantees`)))));
+  draw();
+  const flagList = h("section", { class: "panel" },
+    h("div", { class: "pad item-top" }, h("h2", null, "Look at these"), h("span", { class: "muted small" }, "Prompts to check, not conclusions")),
+    r.flags.length ? chips : null, list);
+
+  const table = (title, head, rows) => h("section", { class: "panel" }, h("div", { class: "pad" }, h("h2", null, title)),
+    h("div", { class: "tbl-wrap" }, h("table", null, h("thead", null, h("tr", null, head.map(([t, n]) => h("th", { class: n ? "n" : null }, t)))),
+      h("tbody", null, rows))));
+  const classTable = table("Loan classification and provisioning",
+    [["Class"], ["Days behind"], ["Loans", 1], ["Outstanding", 1], ["Rate", 1], ["Provision", 1]],
+    r.classification.map((c) => h("tr", null, h("td", null, CLASS_LABEL[c.class]), h("td", { class: "num" }, c.days),
+      h("td", { class: "n" }, c.loans), h("td", { class: "n" }, kes(c.balance_kes)), h("td", { class: "n" }, pct(c.provision_pct)),
+      h("td", { class: "n" }, kes(c.provision_kes)))));
+  const parTable = (title, rows) => table(title, [["Name"], ["Loans", 1], ["Outstanding", 1], ["More than 30 days behind", 1], ["PAR 30", 1]],
+    rows.slice(0, 15).map((x) => h("tr", null, h("td", null, x.name), h("td", { class: "n" }, x.loans), h("td", { class: "n" }, kes(x.balance_kes)),
+      h("td", { class: "n" }, kes(x.at_risk_kes)), h("td", { class: "n" }, pct(x.par_pct)))));
+  const topBorrowers = table(`Largest borrowers (top 10 hold ${pct(r.concentration.top10_pct)})`, [["Member"], ["Outstanding", 1], ["Share", 1]],
+    r.concentration.top.map((x) => h("tr", null, h("td", null, x.name, " ", h("span", { class: "num muted" }, x.member_no)),
+      h("td", { class: "n" }, kes(x.balance_kes)), h("td", { class: "n" }, pct(x.share_pct)))));
+  const topGuarantors = table("Largest guarantors", [["Member"], ["Loans", 1], ["Guaranteed", 1], ["Deposits", 1]],
+    g.top.map((x) => h("tr", null,
+      h("td", null, h("button", { type: "button", class: "link", onclick: () => showExposure(x.member_no) }, x.name), " ",
+        h("span", { class: "num muted" }, x.member_no)),
+      h("td", { class: "n" }, x.loans), h("td", { class: "n" }, kes(x.pledged_kes)),
+      h("td", { class: "n" }, x.deposits_kes === null ? "not known" : kes(x.deposits_kes)))));
+
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Risk and exposure"),
+      h("p", { class: "muted" }, "Where the portfolio and the guarantor network are weak. Includes guarantees from the core system (upload them on Upload) and those made in Sawazi, never counted twice."))),
+    kpis, flagList,
+    h("div", { class: "grid2" }, classTable, topGuarantors),
+    h("div", { class: "grid2" }, parTable("PAR by product", r.par_by_product), parTable("PAR by employer", r.par_by_employer)),
+    topBorrowers,
+    h("p", { class: "muted small" }, "Classification and provision rates follow SASRA's risk classification of assets. Check them against the current SASRA form before filing."),
+  ];
+}
+
+async function showExposure(memberNo) {
+  const x = await api(`${inst()}/members/${encodeURIComponent(memberNo)}/guarantor-exposure`);
+  const body = h("div", { class: "stack" },
+    h("p", null, `Deposits ${x.deposits_kes === null ? "not known" : kes(x.deposits_kes)} · guarantees ${kes(x.pledged_kes)} · `,
+      x.free_kes === null ? "free capacity not known" : `can still guarantee ${kes(Math.max(x.free_kes, 0))}`),
+    x.guarantees.length ? h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "For"), h("th", null, "Loan"), h("th", { class: "n" }, "Guaranteed"), h("th", { class: "n" }, "Still at risk"), h("th", null, "From"))),
+      h("tbody", null, x.guarantees.map((r) => h("tr", null, h("td", null, r.name, " ", h("span", { class: "num muted" }, r.member_no)),
+        h("td", { class: "num" }, r.loan_no || "applying"), h("td", { class: "n" }, kes(r.amount_kes)),
+        h("td", { class: "n" }, r.at_risk_kes === undefined ? "–" : kes(r.at_risk_kes)), h("td", { class: "small" }, r.source === "core" ? "core system" : "Sawazi")))))) :
+      h("p", { class: "muted" }, "Guarantees nobody's loan."));
+  await confirmDialog(`${x.name} (${x.member_no}) as a guarantor`, body, "Close", { info: true });
+}
+
+// ------------------------------------------------------------------ board pack
+
+async function viewBoard() {
+  const snaps = await api(`${inst()}/snapshots`);
+  const now = new Date();
+  const month = h("input", { type: "month", value: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`,
+    max: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`, "aria-label": "Month" });
+  const slot = h("div");
+  const panel = h("section", { class: "panel pad stack" }, h("h2", null, "Monthly board pack"),
+    h("p", { class: "muted small" }, "One file the board can open in any browser and print to PDF: portfolio quality and its trend, collections, lending (including every loan approved with exceptions), guarantor exposure and governance changes."));
+  if (can("board_pack")) {
+    const download = h("button", { type: "button", class: "primary" }, "Download board pack");
+    download.addEventListener("click", () => busy(download, slot, async () => {
+      const r = await fetch(`${inst()}/board-pack.html?month=${encodeURIComponent(month.value)}`, { headers: { Authorization: `Bearer ${state.token}` } });
+      if (!r.ok) throw new ApiError(r.status, detailText(await r.json().catch(() => ({}))));
+      const a = h("a", { href: URL.createObjectURL(await r.blob()), download: `sawazi_board_pack_${month.value}.html` });
+      document.body.append(a); a.click(); a.remove();
+      slot.replaceChildren(note("ok", "Downloaded. Open it in a browser; use Print to save it as a PDF."));
+    }));
+    const snapDate = h("input", { type: "date", max: new Date().toISOString().slice(0, 10), "aria-label": "Snapshot as at" });
+    const snap = h("button", { type: "button" }, "Take snapshot");
+    snap.addEventListener("click", () => busy(snap, slot, async () => {
+      await api(`${inst()}/snapshots`, { method: "POST", params: { as_of: snapDate.value || null } }); route();
+    }));
+    panel.append(h("div", { class: "row-form" }, h("label", null, "Month", month), download), slot,
+      h("p", { class: "muted small" }, "Snapshots are dated by the figures they hold. After uploading a month-end loans export a few days late, give its month-end date."),
+      h("div", { class: "row-form" }, h("label", null, "Snapshot as at (empty = today)", snapDate), snap));
+  } else {
+    panel.append(note("info", "Admins, accountants and approvers can download the board pack."));
+  }
+  const table = h("section", { class: "panel" }, h("div", { class: "pad" }, h("h2", null, "Snapshots"),
+    h("p", { class: "muted small" }, "Taken after every loans upload and on demand. Board packs compare months using the last snapshot in each month; missing months are never filled in.")),
+    snaps.length === 0 ? h("div", { class: "empty" }, "No snapshots yet. Upload a loans export or take one now.") :
+      h("div", { class: "tbl-wrap" }, h("table", null,
+        h("thead", null, h("tr", null, h("th", null, "As at"), h("th", { class: "n" }, "Loans"), h("th", { class: "n" }, "Outstanding"),
+          h("th", { class: "n" }, "PAR 30"), h("th", { class: "n" }, "Provision"), h("th", { class: "n" }, "Flags"))),
+        h("tbody", null, snaps.map((x) => h("tr", null, h("td", { class: "num" }, x.as_of), h("td", { class: "n" }, x.loans),
+          h("td", { class: "n" }, kes(x.balance_kes)), h("td", { class: "n" }, pct(x.par30_pct)), h("td", { class: "n" }, kes(x.provision_kes)),
+          h("td", { class: "n" }, x.flags)))))));
+  return [h("div", { class: "head" }, h("h1", null, "Board pack")), panel, table];
+}
+
+// ------------------------------------------------------------------ SASRA returns
+
+async function viewReturns() {
+  const r = await api(`${inst()}/returns/form4`);
+  const t = r.totals;
+  const slot = h("div");
+  const download = h("button", { type: "button", class: "primary" }, "Download loan-by-loan schedule (CSV)");
+  download.addEventListener("click", () => busy(download, slot, async () => {
+    const res = await fetch(`${inst()}/returns/form4.csv`, { headers: { Authorization: `Bearer ${state.token}` } });
+    if (!res.ok) throw new ApiError(res.status, "Could not create the file");
+    const name = (res.headers.get("content-disposition") || "").match(/filename=([\w.-]+)/)?.[1] || "sawazi_form4_schedule.csv";
+    const a = h("a", { href: URL.createObjectURL(await res.blob()), download: name });
+    document.body.append(a); a.click(); a.remove();
+  }));
+  const rows = r.classes.map((c) => h("tr", null, h("td", null, CLASS_LABEL[c.class]), h("td", { class: "num" }, c.days),
+    h("td", { class: "n" }, c.loans), h("td", { class: "n" }, kes(c.balance_kes)), h("td", { class: "n" }, pct(c.provision_pct)),
+    h("td", { class: "n" }, kes(c.provision_kes)),
+    h("td", { class: "n" }, ["substandard", "doubtful", "loss"].includes(c.class) ? kes(c.interest_arrears_kes) : "–")));
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "SASRA returns"),
+      h("p", { class: "muted" }, "Working papers for SASRA's statutory returns, from the figures Sawazi holds."))),
+    note("warn", "Working schedule, not the official form. Use it to fill SASRA's Form 4 template, and confirm the classes and rates against the current regulations before filing."),
+    h("section", { class: "panel pad stack" },
+      h("div", { class: "item-top" }, h("h2", null, `Form 4: risk classification of assets and provisioning, ${r.quarter}`),
+        h("span", { class: "pill" }, `Due ${when(r.due + "T00:00:00")}`)),
+      h("p", { class: "muted small" }, `Loans as they stand on ${when(r.generated_on + "T00:00:00")}. The latest loans upload is as at ${when(r.as_of + "T00:00:00")}.`),
+      r.is_quarter_end ? null : note("info", `The latest upload is not the quarter-end (${when(r.quarter_end + "T00:00:00")}). Upload the quarter-end loans export with that "as at" date, then download straight away.`),
+      h("div", { class: "tbl-wrap" }, h("table", null,
+        h("thead", null, h("tr", null, h("th", null, "Class"), h("th", null, "Days behind"), h("th", { class: "n" }, "Loans"),
+          h("th", { class: "n" }, "Outstanding"), h("th", { class: "n" }, "Rate"), h("th", { class: "n" }, "Provision"),
+          h("th", { class: "n" }, "Interest to suspend"))),
+        h("tbody", null, rows,
+          h("tr", null, h("td", null, h("b", null, "Total")), h("td", null, ""), h("td", { class: "n" }, h("b", null, t.loans)),
+            h("td", { class: "n" }, h("b", null, kes(t.balance_kes))), h("td", null, ""), h("td", { class: "n" }, h("b", null, kes(t.provision_kes))),
+            h("td", { class: "n" }, h("b", null, kes(t.interest_to_suspend_kes))))))),
+      h("p", { class: "small" }, `Non-performing (substandard, doubtful, loss): ${kes(t.npl_balance_kes)}, ${pct(t.npl_pct)} of loans.`),
+      h("p", { class: "muted small" }, r.interest_known
+        ? "Interest to suspend uses the interest arrears in your loans export. Loans exported without that breakdown count as zero here; check them in the CSV."
+        : "Your loans export has no interest arrears column, so interest to suspend cannot be worked out. Add \"Interest Arrears\" to the export."),
+      h("div", null, download), slot),
+  ];
 }
 
 // ------------------------------------------------------------------ go

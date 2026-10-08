@@ -52,10 +52,29 @@ def pin_hash(g: Guarantee, pin: str) -> str:
 
 # ---------------------------------------------------------------- capacity
 
+def core_counts():
+    """A core-system guarantee counts unless Sawazi recorded the same guarantor on the same (disbursed) loan:
+    then Sawazi's record governs, so the pledge is never counted twice."""
+    from .models import CoreGuarantee
+
+    sawazi_same = (select(Guarantee.id).join(LoanApplication, Guarantee.application_id == LoanApplication.id)
+                   .where(LoanApplication.disbursed_loan_id == CoreGuarantee.loan_id,
+                          Guarantee.guarantor_member_id == CoreGuarantee.guarantor_member_id,
+                          Guarantee.status.in_(("accepted", "released"))))
+    return ~sawazi_same.exists()
+
+
 def pledged_cents(s: Session, institution_id: int, member_id: int) -> int:
-    return s.scalar(select(func.coalesce(func.sum(Guarantee.amount_cents), 0)).where(
+    """Everything a member currently guarantees: accepted in Sawazi, plus active in the core system."""
+    from .models import CoreGuarantee
+
+    in_sawazi = s.scalar(select(func.coalesce(func.sum(Guarantee.amount_cents), 0)).where(
         Guarantee.institution_id == institution_id, Guarantee.guarantor_member_id == member_id,
         Guarantee.status == "accepted")) or 0
+    in_core = s.scalar(select(func.coalesce(func.sum(CoreGuarantee.amount_cents), 0)).where(
+        CoreGuarantee.institution_id == institution_id, CoreGuarantee.guarantor_member_id == member_id,
+        CoreGuarantee.status == "active", core_counts())) or 0
+    return in_sawazi + in_core
 
 
 def free_capacity(s: Session, m: Member) -> int | None:
@@ -184,4 +203,12 @@ def release_repaid(s: Session, institution_id: int) -> int:
         g.status = "released"
         audit.record(s, system, "guarantee.release", "guarantee", g.id, before={"status": "accepted"},
                      after={"status": "released"}, note=f"loan {ln.loan_no} repaid")
-    return len(rows)
+    from .models import CoreGuarantee
+    core = s.execute(select(CoreGuarantee, Loan).join(Loan, CoreGuarantee.loan_id == Loan.id).where(
+        CoreGuarantee.institution_id == institution_id, CoreGuarantee.status == "active",
+        Loan.status == "closed")).all()
+    for cg, ln in core:
+        cg.status, cg.released_at = "released", utcnow()
+        audit.record(s, system, "core_guarantee.release", "core_guarantee", cg.id, before={"status": "active"},
+                     after={"status": "released"}, note=f"loan {ln.loan_no} repaid")
+    return len(rows) + len(core)

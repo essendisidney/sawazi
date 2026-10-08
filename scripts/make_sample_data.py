@@ -244,5 +244,46 @@ for emp in EMPLOYERS:
     w(f"checkoff_schedule_{tag}.csv", ["Member No", "Name", "Amount"], sched)
     w(f"checkoff_remittance_{tag}.csv", ["Member No", "Payroll Name", "Amount"], remit)
 
+# ---- guarantees as the core system records them. Separate generator: no other file changes.
+# Each guarantee fits within the guarantor's remaining deposits, as a core system would enforce, except for
+# planted cases the risk view should catch: a pair who guarantee each other, a circle of three, two members
+# pledged above their deposits, and guarantors who are behind on their own loans.
+gr = random.Random(77)
+by_no = {mm["member_no"]: mm for mm in members}
+loan_of = {}
+for l in loans:
+    loan_of.setdefault(l["member_no"], l["loan_no"])
+borrowers = sorted(loan_of)
+room = {mm["member_no"]: mm["deposits"] for mm in members}  # deposits not yet pledged
+guarantees, seen_g = [], set()
+
+
+def pledge(loan_no, g_no, amount, force=False):
+    if (loan_no, g_no) in seen_g:
+        return
+    amount = round(amount, -2) if force else round(min(amount, room[g_no] * 0.8), -2)
+    if amount < 1_000:
+        return
+    seen_g.add((loan_no, g_no))
+    room[g_no] -= amount
+    guarantees.append([loan_no, g_no, f"{amount:,.2f}"])
+
+
+for l in loans:
+    if gr.random() < 0.65:
+        for g_no in [mm["member_no"] for mm in gr.sample(members, 4) if mm["member_no"] != l["member_no"]][:gr.choice([1, 2, 2, 3])]:
+            pledge(l["loan_no"], g_no, l["principal"] / 3)
+balance_of = {l["member_no"]: l["balance"] for l in loans if l["loan_no"] == loan_of[l["member_no"]]}
+big = [b for b in borrowers if balance_of[b] > 150_000]  # loans a month of payments cannot clear
+pair, circle = big[10:12], big[20:23]
+for g_no, borrower in [(pair[0], pair[1]), (pair[1], pair[0])] + [(circle[i], circle[(i + 1) % 3]) for i in range(3)]:
+    pledge(loan_of[borrower], g_no, 10_000, force=True)
+for g_no in borrowers[30:32]:  # over-pledged: guarantees worth twice their deposits
+    pledge(loan_of[borrowers[40]], g_no, by_no[g_no]["deposits"] * 2, force=True)
+behind = [l["member_no"] for l in loans if l["dpd"] > 30][:3]
+for i, g_no in enumerate(behind):
+    pledge(loan_of[borrowers[50 + i]], g_no, 15_000, force=True)
+w("guarantees.csv", ["Loan No", "Guarantor Member No", "Amount Guaranteed"], guarantees)
+
 w("mpesa_truth.csv", ["receipt", "true_member_no"], sorted(truth.items()))
 print(f"members={len(members)} loans={len(loans)} mpesa_lines={len(mpesa)} bank_lines={len(bank)} -> {OUT}")

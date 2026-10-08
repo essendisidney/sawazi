@@ -14,7 +14,8 @@ from datetime import date, datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import (CheckoffRemittance, CheckoffSchedule, ExceptionItem, Loan, LoanApplication, Member,
+from ..models import (CheckoffRemittance, CheckoffSchedule, CoreGuarantee, ExceptionItem, Loan, LoanApplication,
+                      Member,
                       MpesaCallback, Transaction)
 from .common import (
     norm_phone,
@@ -30,6 +31,7 @@ from .common import (
 class ImportResult:
     created: int = 0
     updated: int = 0  # member balances: existing members whose figures changed
+    released: int = 0  # core guarantees no longer in a complete (replace) file
     skipped_duplicates: int = 0
     rejected: list[str] = field(default_factory=list)
     callbacks_confirmed: int = 0  # M-Pesa only: real-time payments now seen on the statement
@@ -44,6 +46,8 @@ class ImportResult:
         }
         if self.updated:
             out["updated"] = self.updated
+        if self.released:
+            out["released"] = self.released
         if self.callbacks_confirmed or self.callbacks_mismatched:
             out |= {"callbacks_confirmed": self.callbacks_confirmed, "callbacks_mismatched": self.callbacks_mismatched}
         return out
@@ -142,6 +146,59 @@ def _link_disbursed(s: Session, institution_id: int, new_loans: list[Loan]) -> N
             a.status, a.disbursed_loan_id = "disbursed", ln.id
             a.disbursed_at = datetime.now(timezone.utc).replace(tzinfo=None)
             waiting.remove(a)
+
+
+def import_core_guarantees(s: Session, institution_id: int, content, replace: bool = False) -> ImportResult:
+    """Guarantees from the core system: Loan No, Guarantor (member no), Amount. Re-uploading updates amounts.
+    With replace=True the file is taken as the complete current list, and core guarantees missing from it are
+    released. Without it, nothing is released (a partial file must never wipe exposure)."""
+    res = ImportResult()
+    loans = {ln.loan_no: ln for ln in s.scalars(select(Loan).where(Loan.institution_id == institution_id))}
+    members = {m.member_no: m for m in s.scalars(select(Member).where(Member.institution_id == institution_id))}
+    existing = {(g.loan_id, g.guarantor_member_id): g for g in s.scalars(
+        select(CoreGuarantee).where(CoreGuarantee.institution_id == institution_id))}
+    seen: set[tuple[int, int]] = set()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i, row in enumerate(read_rows(content), start=2):
+        loan_no = pick(row, "loan_no", "loan_number", "loan_account", "account_no")
+        g_no = pick(row, "guarantor_member_no", "guarantor_no", "guarantor", "guarantor_member_number", "member_no")
+        amount = to_cents(pick(row, "amount_guaranteed", "guaranteed_amount", "amount", "guarantee_amount"))
+        ln, gm = loans.get(loan_no), members.get(g_no)
+        if ln is None or gm is None:
+            what = f"loan '{loan_no}'" if ln is None else f"guarantor '{g_no}'"
+            res.rejected.append(f"row {i}: unknown {what}")
+            continue
+        if gm.id == ln.member_id:
+            res.rejected.append(f"row {i}: {g_no} cannot guarantee their own loan {loan_no}")
+            continue
+        if amount <= 0:
+            res.rejected.append(f"row {i}: {loan_no}/{g_no} has no guaranteed amount")
+            continue
+        key = (ln.id, gm.id)
+        if key in seen:
+            res.rejected.append(f"row {i}: {loan_no}/{g_no} appears twice; first row kept")
+            continue
+        seen.add(key)
+        status = "released" if ln.status == "closed" else "active"
+        g = existing.get(key)
+        if g is None:
+            g = CoreGuarantee(institution_id=institution_id, loan_id=ln.id, guarantor_member_id=gm.id,
+                              amount_cents=amount, status=status, imported_at=now,
+                              released_at=now if status == "released" else None)
+            s.add(g)
+            res.created += 1
+        else:
+            if (g.amount_cents, g.status) != (amount, status):
+                res.updated += 1
+            g.amount_cents, g.status, g.imported_at = amount, status, now
+            g.released_at = now if status == "released" else None
+    if replace:
+        for key, g in existing.items():
+            if key not in seen and g.status == "active":
+                g.status, g.released_at = "released", now
+                res.released += 1
+    s.commit()
+    return res
 
 
 def import_member_balances(s: Session, institution_id: int, content) -> ImportResult:
