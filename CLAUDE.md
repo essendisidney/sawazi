@@ -32,7 +32,10 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
    never from memory. Open policy questions: netting deposits before provisioning; rescheduled-loan classification.
    `exposure.CLASSES` rates (1/5/25/50/100%) match the regulation text for the first three and a CPA summary for the
    rest; confirm against the gazetted text
-4. Then: member app (ask about its form first)
+4. Member app DONE (`sawazi/member_api.py` at `/m/...`, `sawazi/app/` at `/app/`): web app on the phone, SMS code then
+   own PIN per phone, English/Kiswahili. Member tokens (`mbr_`) never reach staff endpoints. Shows only the member's
+   own records; answers guarantees via `guarantors.record_answer`; applications arrive as console drafts
+   (`source=member_app`), so maker-checker still holds. Never caches member data on the phone
 
 ## Phase 2 — done
 1. Member balances and pay DONE (members export columns + `member_balances` import; unknown is never zero)
