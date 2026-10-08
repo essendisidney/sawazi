@@ -6,7 +6,7 @@ when its "done when" is true.
 | # | Item | Owner | Blocks |
 |---|------|-------|--------|
 | 0 | ODPC registration and a data processing agreement with the pilot SACCO | Pesara (Sidney) | Any real member data |
-| 1 | Native-speaker check of the Swahili on the guarantor page | Sidney + a native speaker | Guarantor requests |
+| 1 | Native-speaker check of the Swahili on the guarantor page and in the member app | Sidney + a native speaker | Guarantor requests, member app |
 | 2 | `SAWAZI_PUBLIC_URL` on the live server | Whoever deploys | Guarantor requests |
 | 3 | Deposits-multiplier policy confirmed with the pilot SACCO | Sidney + SACCO credit committee | Loan appraisal |
 | 4 | Taifa Mobile SMS: number format and API key confirmed, one live test | Sidney (Taifa account) | Real SMS |
@@ -24,7 +24,11 @@ institution first.
 
 **Done when:** both are signed and on file.
 
-## 1. Swahili on the guarantor page
+## 1. Swahili on the guarantor page and in the member app
+
+The member app's words are in `sawazi/app/app.js` (the `T.sw` block, next to the English). Some messages still
+come from the server in English (wrong code, wrong PIN, the loan check's reasons).
+
 
 The page a guarantor opens from the SMS link (`sawazi/guarantors.py`, `summary()`, and the buttons in
 `sawazi/api.py`, `_consent_page`) has one Swahili sentence and English-only buttons.

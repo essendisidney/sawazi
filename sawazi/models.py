@@ -290,7 +290,7 @@ class SmsMessage(Base):
     provider_message_id: Mapped[str | None] = mapped_column(String(64), index=True)
     provider_status: Mapped[str | None] = mapped_column(String(10))
     provider_description: Mapped[str | None] = mapped_column(String(300))
-    approved_by_user_id: Mapped[int] = mapped_column(ForeignKey("staff_users.id"))
+    approved_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("staff_users.id"))  # None: sent by the system (sign-in codes)
     approved_at: Mapped[datetime] = mapped_column(DateTime)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime)
     delivery_status: Mapped[str | None] = mapped_column(String(100))  # raw delivery report status
@@ -391,7 +391,10 @@ class LoanApplication(Base):
     appraisal_outcome: Mapped[str | None] = mapped_column(String(20))  # passes | fails | incomplete
     approvals_needed: Mapped[int] = mapped_column(Integer, default=1)
     override_reason: Mapped[str | None] = mapped_column(Text)  # set when approved despite failed/unknown checks
-    prepared_by_user_id: Mapped[int] = mapped_column(ForeignKey("staff_users.id"))
+    # None while a member's own application waits for a credit officer; set to whoever submits it (maker-checker)
+    prepared_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("staff_users.id"))
+    source: Mapped[str] = mapped_column(String(20), default="staff")  # staff | member_app
+    nominated_guarantors: Mapped[list | None] = mapped_column(JSON)  # member numbers the member suggested
     created_at: Mapped[datetime] = mapped_column(DateTime)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -487,3 +490,63 @@ class PortfolioSnapshot(Base):
     as_of: Mapped[date] = mapped_column(Date)
     taken_at: Mapped[datetime] = mapped_column(DateTime)
     figures: Mapped[dict] = mapped_column(JSON)
+
+
+class MemberOtp(Base):
+    """A one-time SMS code for a member signing in on a new phone. Keyed by phone before we know which member
+    (one phone can belong to several members, even at several SACCOs), so not institution-scoped."""
+
+    __tablename__ = "member_otps"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    phone: Mapped[str] = mapped_column(String(20), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    verify_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True)  # set once the code is right
+    used_at: Mapped[datetime | None] = mapped_column(DateTime)  # the verify token was used to register a device
+
+
+class MemberCredential(Base):
+    """The member's own app PIN (hashed), and its lock-out state."""
+
+    __tablename__ = "member_credentials"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id"), unique=True)
+    pin_hash: Mapped[str] = mapped_column(String(200))
+    failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class MemberDevice(Base):
+    """A phone the member has signed in on with an SMS code. Only the token's hash is stored."""
+
+    __tablename__ = "member_devices"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    label: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class MemberSession(Base):
+    """A signed-in member app session (device + PIN). Short-lived; only the token's hash is stored."""
+
+    __tablename__ = "member_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id"), index=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("member_devices.id"))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime)

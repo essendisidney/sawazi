@@ -89,6 +89,8 @@ def main():
     print("Logins (fictional demo data; password is DEMO_PASSWORD in scripts/console_demo.py):")
     for role, _ in DEMO_USERS:
         print(f"  {role:15} {role.replace('_', '.')}@ufanisi.test")
+    print(f"Member app:    http://localhost:{PORT}/app/  (any sample member's phone, e.g. from members.csv;"
+          " the sign-in code shows in this log as a simulated SMS)")
     import uvicorn
     uvicorn.run("sawazi.api:app", host="127.0.0.1", port=PORT)
 

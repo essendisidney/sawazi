@@ -178,6 +178,25 @@ It is a working paper for filling SASRA's template, not the official form. Uploa
 its "as at" date, then download straight away. Classes and rates (1%, 5%, 25%, 50%, 100% for 0, 1-30, 31-180,
 181-360 and 360+ days) must be confirmed against the current regulations before filing.
 
+## Member app (Phase 3)
+
+A phone-first web app at `/app/` for members, in English and Kiswahili. Nothing to install from a store: it opens in
+the phone's browser and can be added to the home screen.
+- **Signing in:** phone number, then a one-time SMS code, then the member chooses their own app PIN (4 to 6 digits;
+  1234, 0000 and the like are refused). After that, the PIN on that phone. A new phone, or a forgotten PIN, needs a
+  new SMS code. Five wrong PINs lock the app for 15 minutes. The app never says whether a number belongs to a member.
+- **Money:** deposits, share capital and each loan with the exact paybill and account number to pay it, and the
+  latest payments with how each was split.
+- **Guarantees:** requests waiting for them (accept or decline in the app, with the same capacity check and lock as
+  the SMS link and USSD), what they guarantee, and who guarantees them.
+- **Loan:** an indicative check (a guide, never a decision) and an application that arrives in the console as a
+  draft for a credit officer, with any guarantors the member named. Maker-checker still applies.
+
+Member sign-in is separate from staff sign-in: member tokens can never reach staff endpoints, and the other way
+round. Staff with `manage_users` can switch off a member's app access on every phone
+(`POST /institutions/{id}/members/{no}/app-access/revoke`). Member records are never cached on the phone; only the
+app's own files are, so it opens on a weak connection.
+
 ## Allocation rules
 
 Each institution chooses how a matched payment is split (`GET/PUT /institutions/{id}/allocation-rules`, admin only,
@@ -351,6 +370,8 @@ sawazi/
   returns.py           SASRA return working papers (Form 4 schedule)
   daraja.py            M-Pesa Daraja C2B callback parsing, URL registration
   console/             staff web console (static HTML/CSS/JS served at /console/)
+  member_api.py        member app API (/m/...): SMS code + PIN sign-in, own balances, guarantees, applications
+  app/                 member app (static, served at /app/), English and Kiswahili
   importers/           CSV parsing for every source
   engine/matching.py   member matching, anomaly flags
   engine/allocation.py per-institution allocation rules (pure planner + apply)
@@ -364,7 +385,7 @@ tests/                 pytest suite
 
 ## Next
 
-Phase 3 in progress: the risk and exposure view, board pack and Form 4 working schedule are built. Waiting on SASRA's official Form 4 (and Form 3) templates to fill their exact layout; then the member app.
+Phase 3 in progress: the risk and exposure view, board pack, Form 4 working schedule and member app are built. Waiting on SASRA's official Form 4 (and Form 3) templates to fill their exact layout.
 
 Before any real member data: ODPC registration and a data processing agreement with each pilot institution.
 

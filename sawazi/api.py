@@ -1272,6 +1272,7 @@ def _application_out(s: Session, a: LoanApplication, live: bool = False) -> dict
            "product_id": prod.id, "product": prod.code, "product_name": prod.name,
            "amount_kes": a.amount_cents / 100, "term_months": a.term_months, "purpose": a.purpose,
            "approvals_needed": a.approvals_needed, "override_reason": a.override_reason,
+           "source": a.source, "nominated_guarantors": a.nominated_guarantors or [],
            "prepared_by_user_id": a.prepared_by_user_id, "created_at": a.created_at,
            "submitted_at": a.submitted_at, "decided_at": a.decided_at, "exported_at": a.exported_at,
            "disbursed_at": a.disbursed_at, "appraisal": a.appraisal, "appraisal_outcome": a.appraisal_outcome,
@@ -1352,6 +1353,8 @@ def submit_application(institution_id: int, app_id: int, s: Session = Depends(ge
     above = prod.second_approval_above_cents is not None and a.amount_cents > prod.second_approval_above_cents
     a.approvals_needed = 2 if above else 1
     a.status, a.submitted_at = "submitted", auth.utcnow()
+    if a.prepared_by_user_id is None:  # a member's own application: whoever submits it is the maker
+        a.prepared_by_user_id = who.id
     audit.record(s, who, "loan_application.submit", "loan_application", a.id,
                  after={"appraisal_outcome": result.outcome, "approvals_needed": a.approvals_needed})
     s.commit()
@@ -1880,6 +1883,8 @@ CONSOLE_DIR = Path(__file__).parent / "console"
 CONSOLE_CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; "
                "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; "
                "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+APP_DIR = Path(__file__).parent / "app"
+APP_CSP = CONSOLE_CSP + "; manifest-src 'self'; worker-src 'self'"
 
 
 @app.middleware("http")
@@ -1895,6 +1900,13 @@ async def console_security_headers(request: Request, call_next):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Cache-Control"] = "no-store"
+    if request.url.path.startswith("/app"):  # the member app: its files may be cached by its own service worker
+        response.headers["Content-Security-Policy"] = APP_CSP
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Cache-Control"] = "no-cache"
+    if request.url.path.startswith("/m/"):  # a member's own records never stay in any cache
+        response.headers["Cache-Control"] = "no-store"
     return response
 
 
@@ -1903,4 +1915,8 @@ def root():
     return RedirectResponse("/console/")
 
 
+from .member_api import router as member_router  # noqa: E402  (after the app exists)
+
+app.include_router(member_router)
 app.mount("/console", StaticFiles(directory=CONSOLE_DIR, html=True), name="console")
+app.mount("/app", StaticFiles(directory=APP_DIR, html=True), name="member_app")
