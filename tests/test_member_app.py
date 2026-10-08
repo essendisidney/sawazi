@@ -141,6 +141,20 @@ def test_staff_can_switch_off_app_access(members):
         assert s.scalar(select(AuditEvent.action).where(AuditEvent.action == "member_app.revoke"))
 
 
+def test_staff_see_app_access_and_must_give_a_reason(members):
+    c, Session, phone = members
+    admin = login(c, "admin@a.test")
+    assert c.get("/institutions/1/members/M1/app-access", headers=admin).json()["has_pin"] is False
+    sign_up(c, phone)
+    a = c.get("/institutions/1/members/M1/app-access", headers=admin).json()
+    assert a["has_pin"] and len(a["devices"]) == 1 and a["devices"][0]["revoked_at"] is None and a["locked_until"] is None
+    assert "pin_hash" not in str(a) and "token" not in str(a)
+    assert c.post("/institutions/1/members/M1/app-access/revoke", headers=admin, params={"note": ""}).status_code == 422
+    assert c.get("/institutions/1/members/M1/app-access", headers=login(c, "accountant@a.test")).status_code == 403
+    assert c.get("/institutions/2/members/B7/app-access", headers=admin).status_code in (403, 404)
+    assert c.get("/institutions/1/members/NOPE/app-access", headers=admin).status_code == 404
+
+
 # ---------------------------------------------------------------- the member's own data
 
 from datetime import date, datetime  # noqa: E402

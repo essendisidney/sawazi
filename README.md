@@ -77,6 +77,7 @@ step, nothing extra to host). Staff log in with their Sawazi account and see onl
 | Exceptions | Check-off short/missing/unidentified lines, possible double payments and other flags; resolve with a reason |
 | Collections | Ranked arrears queue with drafted messages; tick reminders and send SMS after confirming; failed sends and recent messages with delivery status |
 | Upload | Upload any statement or export, run matching, reconcile check-off for an employer and month |
+| Admin (admins only) | Staff: add, change role, reset password, switch off. API keys: create (shown once), revoke. SMS: settings, opt-outs, opting a number back in with a reason. Member app: see a member's phones, sign them out everywhere with a reason. Audit log: every manual action, filterable, read-only |
 
 Try it on fictional data:
 

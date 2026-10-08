@@ -18,7 +18,8 @@ const T = {
     verify: "Continue", choose: "Which account?", setPin: "Choose an app PIN", pinHint: "4 to 6 digits. Not your M-Pesa PIN, not 1234.",
     pinAgain: "Type it again", pinsDiffer: "The two PINs are different.", save: "Save and open", enterPin: "Enter your PIN",
     unlock: "Open", forgot: "Forgot your PIN or using a new phone?", useSms: "Sign in with an SMS code",
-    money: "Money", guarantees: "Guarantees", loan: "Loan", deposits: "Deposits", shares: "Share capital", asAt: "as at",
+    money: "Money", guarantees: "Guarantees", loan: "Loan", hello: "Hello", savings: "Your savings", onTrack: "Up to date",
+    payWith: "Pay with M-Pesa: Lipa na M-Pesa, then Pay Bill", nextDue: "Next due", deposits: "Deposits", shares: "Share capital", asAt: "as at",
     notKnown: "not known yet", loanBal: "Balance", overdue: "Overdue", daysLate: "days late", instalment: "Monthly instalment",
     howToPay: "How to pay", paybill: "Paybill", account: "Account", copy: "Copy", copied: "Copied",
     payDeposits: "To add to your deposits", recent: "Recent payments", noLoans: "You have no active loans.", noPays: "No payments yet.",
@@ -43,7 +44,8 @@ const T = {
     verify: "Endelea", choose: "Akaunti ipi?", setPin: "Chagua PIN ya programu", pinHint: "Tarakimu 4 hadi 6. Si PIN yako ya M-Pesa, si 1234.",
     pinAgain: "Iandike tena", pinsDiffer: "PIN hizo mbili hazilingani.", save: "Hifadhi na ufungue", enterPin: "Weka PIN yako",
     unlock: "Fungua", forgot: "Umesahau PIN au unatumia simu mpya?", useSms: "Ingia kwa nambari ya SMS",
-    money: "Pesa", guarantees: "Dhamana", loan: "Mkopo", deposits: "Akiba", shares: "Hisa", asAt: "hadi",
+    money: "Pesa", guarantees: "Dhamana", loan: "Mkopo", hello: "Habari", savings: "Akiba yako", onTrack: "Hujachelewa",
+    payWith: "Lipa kwa M-Pesa: Lipa na M-Pesa, kisha Pay Bill", nextDue: "Tarehe ya kulipa", deposits: "Akiba", shares: "Hisa", asAt: "hadi",
     notKnown: "bado haijulikani", loanBal: "Salio", overdue: "Imechelewa", daysLate: "siku za kuchelewa", instalment: "Rejesho la mwezi",
     howToPay: "Jinsi ya kulipa", paybill: "Paybill", account: "Akaunti", copy: "Nakili", copied: "Imenakiliwa",
     payDeposits: "Kuongeza akiba yako", recent: "Malipo ya hivi karibuni", noLoans: "Huna mkopo unaoendelea.", noPays: "Bado hakuna malipo.",
@@ -204,18 +206,43 @@ function showUnlock() {
 
 // ------------------------------------------------------------------ the app
 
+const ICONS = {
+  money: ["M3 7h18v12H3z", "M3 11h18", "M16 15h2"],
+  guarantees: ["M12 3 4 6v6c0 4.5 3.4 7.7 8 9 4.6-1.3 8-4.5 8-9V6z", "M9 12l2 2 4-4"],
+  loan: ["M12 3v18", "M16.5 7H10a3 3 0 0 0 0 6h4a3 3 0 0 1 0 6H7"],
+  out: ["M10 4H5v16h5", "M14 8l4 4-4 4", "M18 12H9"],
+  check: ["M5 12l5 5 9-10"],
+};
+function icon(name, size = 22) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", width: String(size), height: String(size), fill: "none", stroke: "currentColor",
+    "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) svg.setAttribute(k, v);
+  for (const d of ICONS[name] || []) { const path = document.createElementNS(NS, "path"); path.setAttribute("d", d); svg.append(path); }
+  return svg;
+}
+const initials = (name) => name.split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+
+async function signOutApp() {
+  await api("/m/logout", { method: "POST" }).catch(() => {});
+  state.session = null; showUnlock();
+}
+
 const TABS = [["money", viewMoney], ["guarantees", viewGuarantees], ["loan", viewLoan]];
 
 async function route() {
   if (!state.session) return showUnlock();
   const name = (location.hash.match(/^#\/(\w+)/) || [])[1];
   const [key, view] = TABS.find(([k]) => k === name) || TABS[0];
-  const main = h("main", null, h("p", { class: "muted" }, "…"));
-  const top = h("header", { class: "top" }, h("img", { src: "logo.svg", alt: "" }),
+  const main = h("main", null, h("div", { class: "skeleton" }), h("div", { class: "skeleton" }));
+  const top = h("header", { class: "top" },
+    h("span", { class: "avatar", "aria-hidden": "true" }, initials(state.member.name)),
     h("div", { class: "who" }, h("b", null, state.member.name), h("span", null, `${state.member.member_no} · ${state.member.institution}`)),
-    langButton(route));
+    langButton(route),
+    h("button", { type: "button", class: "icon-btn", "aria-label": t("signout"), title: t("signout"), onclick: signOutApp }, icon("out", 20)));
   const tabs = h("nav", { class: "tabs", "aria-label": "Sections" }, TABS.map(([k]) =>
-    h("a", { href: `#/${k}`, "aria-current": k === key ? "page" : null }, t(k), k === "guarantees" && state.badge ? h("span", { class: "dot" }, state.badge) : null)));
+    h("a", { href: `#/${k}`, "aria-current": k === key ? "page" : null }, icon(k), h("span", null, t(k)),
+      k === "guarantees" && state.badge ? h("span", { class: "dot" }, state.badge) : null)));
   document.getElementById("app").replaceChildren(top, main, tabs);
   try { main.replaceChildren(...[await view()].flat(Infinity).filter(Boolean)); }
   catch (e) { if (e.status !== 401) main.replaceChildren(alertBox("bad", e.message)); }
@@ -227,7 +254,7 @@ function copyRow(label, value) {
   btn.addEventListener("click", async () => {
     try { await navigator.clipboard.writeText(value); btn.textContent = t("copied"); setTimeout(() => { btn.textContent = t("copy"); }, 1500); } catch {}
   });
-  return h("div", { class: "row" }, h("span", { class: "muted small" }, label), h("span", null, h("b", null, value), " ", btn));
+  return h("div", { class: "pay-row" }, h("span", { class: "pay-k" }, label), h("b", { class: "pay-v num" }, value), btn);
 }
 
 async function viewMoney() {
@@ -236,30 +263,37 @@ async function viewMoney() {
   state.badge = g.waiting.length;
   document.querySelector(".tabs .dot")?.remove();
   if (state.badge) document.querySelector('.tabs a[href="#/guarantees"]')?.append(h("span", { class: "dot" }, state.badge));
-  const loans = o.loans.map((l) => h("section", { class: "card" },
-    h("div", { class: "row" }, h("h2", null, l.product), h("span", { class: "muted small num" }, l.loan_no)),
-    h("div", { class: "pair" },
-      h("div", null, h("div", { class: "label" }, t("loanBal")), h("div", { class: "big" }, kes(l.balance_kes))),
-      h("div", null, h("div", { class: "label" }, t("instalment")), h("div", { class: "big" }, kes(l.installment_kes)))),
-    l.arrears_kes > 0 ? alertBox(l.days_in_arrears > 30 ? "bad" : "warn", `${t("overdue")}: ${kes(l.arrears_kes)} · ${l.days_in_arrears} ${t("daysLate")}`) : null,
-    l.pay.paybill ? h("div", { class: "pay" }, h("div", { class: "label" }, t("howToPay")),
-      copyRow(t("paybill"), l.pay.paybill), copyRow(t("account"), l.pay.account)) : null));
+  const payBox = (pay) => pay.paybill ? h("div", { class: "pay" }, h("div", { class: "pay-head" }, t("payWith")),
+    copyRow(t("paybill"), pay.paybill), copyRow(t("account"), pay.account)) : null;
+  const loans = o.loans.map((l) => {
+    const late = l.arrears_kes > 0;
+    return h("section", { class: "card loan" },
+      h("div", { class: "row" }, h("div", null, h("h2", null, l.product), h("span", { class: "muted small num" }, l.loan_no)),
+        late ? h("span", { class: `chip ${l.days_in_arrears > 30 ? "bad" : "warn"}` }, `${l.days_in_arrears} ${t("daysLate")}`)
+          : h("span", { class: "chip ok" }, icon("check", 14), t("onTrack"))),
+      h("div", { class: "pair" },
+        h("div", null, h("div", { class: "label" }, t("loanBal")), h("div", { class: "big" }, kes(l.balance_kes))),
+        h("div", null, h("div", { class: "label" }, t("instalment")), h("div", { class: "big" }, kes(l.installment_kes)),
+          l.next_due_on ? h("div", { class: "muted small" }, `${t("nextDue")}: ${day(l.next_due_on)}`) : null)),
+      late ? alertBox(l.days_in_arrears > 30 ? "bad" : "warn", `${t("overdue")}: ${kes(l.arrears_kes)}`) : null,
+      payBox(l.pay));
+  });
   return [
-    h("section", { class: "card" }, h("div", { class: "pair" },
-      h("div", null, h("div", { class: "label" }, t("deposits")), h("div", { class: "big" }, kes(o.deposits_kes))),
-      h("div", null, h("div", { class: "label" }, t("shares")), h("div", { class: "big" }, kes(o.shares_kes)))),
-      o.balances_as_of ? h("p", { class: "muted small" }, `${t("asAt")} ${day(o.balances_as_of)}`) : null),
+    h("section", { class: "hero" },
+      h("p", { class: "hello" }, `${t("hello")}, ${state.member.name.split(/\s+/)[0]}`),
+      h("div", { class: "label" }, t("deposits")),
+      h("div", { class: "hero-v num" }, kes(o.deposits_kes)),
+      h("div", { class: "hero-row" },
+        h("span", null, h("span", { class: "label" }, t("shares")), " ", h("b", { class: "num" }, kes(o.shares_kes))),
+        o.balances_as_of ? h("span", { class: "small" }, `${t("asAt")} ${day(o.balances_as_of)}`) : null)),
     loans.length ? loans : h("section", { class: "card" }, h("p", { class: "muted" }, t("noLoans"))),
-    o.pay_deposits.paybill ? h("section", { class: "card" }, h("h2", null, t("payDeposits")),
-      h("div", { class: "pay" }, copyRow(t("paybill"), o.pay_deposits.paybill), copyRow(t("account"), o.pay_deposits.account))) : null,
+    o.pay_deposits.paybill ? h("section", { class: "card" }, h("h2", null, t("payDeposits")), payBox(o.pay_deposits)) : null,
     h("section", { class: "card" }, h("h2", null, t("recent")),
       o.payments.length ? h("div", { class: "list" }, o.payments.map((p) => h("div", { class: "item" },
-        h("div", null, h("div", null, day(p.date)), h("div", { class: "muted small" },
+        h("span", { class: "coin", "aria-hidden": "true" }, icon("money", 18)),
+        h("div", { class: "grow" }, h("div", null, day(p.date)), h("div", { class: "muted small" },
           p.split.map((x) => `${kes(x.kes)} ${(T[state.lang].split[x.to] || x.to)}`).join(" · "))),
         h("b", { class: "num" }, kes(p.kes))))) : h("p", { class: "muted" }, t("noPays"))),
-    h("button", { type: "button", class: "link", onclick: async () => {
-      await api("/m/logout", { method: "POST" }).catch(() => {}); state.session = null; showUnlock();
-    } }, t("signout")),
   ];
 }
 
@@ -283,7 +317,8 @@ async function viewGuarantees() {
       h("p", { class: "muted small" }, t("acceptBody")), h("div", { class: "pair" }, no, yes));
   });
   const list = (rows, who) => rows.length ? h("div", { class: "list" }, rows.map((r) => h("div", { class: "item" },
-    h("span", null, r[who], r.loan_no ? h("span", { class: "muted small" }, ` · ${r.loan_no}`) : null), h("b", { class: "num" }, kes(r.kes)))))
+    h("span", { class: "avatar sm", "aria-hidden": "true" }, initials(r[who])),
+    h("span", { class: "grow" }, r[who], r.loan_no ? h("span", { class: "muted small" }, ` · ${r.loan_no}`) : null), h("b", { class: "num" }, kes(r.kes)))))
     : h("p", { class: "muted" }, t("none"));
   return [
     h("h1", null, t("waiting")), slot,
