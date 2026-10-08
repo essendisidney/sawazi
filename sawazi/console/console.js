@@ -163,19 +163,45 @@ async function start() {
 // ------------------------------------------------------------------ shell and routing
 
 const VIEWS = {
-  dashboard: { label: "Dashboard", need: "read", render: viewDashboard },
-  suspense: { label: "Suspense", need: "read", render: viewSuspense, badge: () => state.counts?.suspense },
-  exceptions: { label: "Exceptions", need: "read", render: viewExceptions, badge: () => state.counts?.other },
-  collections: { label: "Collections", need: "read", render: viewCollections },
-  loans: { label: "Loans", need: "read", render: viewLoans },
-  risk: { label: "Risk", need: "read", render: viewRisk },
-  board: { label: "Board pack", need: "read", render: viewBoard },
-  returns: { label: "Returns", need: "returns", render: viewReturns },
-  upload: { label: "Upload", need: "reconcile", render: viewUpload },
-  rules: { label: "Allocation rules", need: "read", render: viewRules },
-  products: { label: "Products", need: "read", render: viewProducts },
-  admin: { label: "Admin", need: "manage_users", render: viewAdmin },
+  dashboard: { label: "Dashboard", group: "Today", icon: "home", need: "read", render: viewDashboard },
+  suspense: { label: "Suspense", group: "Today", icon: "inbox", need: "read", render: viewSuspense, badge: () => state.counts?.suspense },
+  exceptions: { label: "Exceptions", group: "Today", icon: "flag", need: "read", render: viewExceptions, badge: () => state.counts?.other },
+  collections: { label: "Collections", group: "Today", icon: "phone", need: "read", render: viewCollections },
+  loans: { label: "Loans", group: "Lending", icon: "cash", need: "read", render: viewLoans },
+  products: { label: "Products", group: "Lending", icon: "layers", need: "read", render: viewProducts },
+  risk: { label: "Risk", group: "Oversight", icon: "shield", need: "read", render: viewRisk },
+  board: { label: "Board pack", group: "Oversight", icon: "chart", need: "read", render: viewBoard },
+  returns: { label: "Returns", group: "Oversight", icon: "file", need: "returns", render: viewReturns },
+  upload: { label: "Upload", group: "Setup", icon: "upload", need: "reconcile", render: viewUpload },
+  rules: { label: "Allocation rules", group: "Setup", icon: "split", need: "read", render: viewRules },
+  admin: { label: "Admin", group: "Setup", icon: "key", need: "manage_users", render: viewAdmin },
 };
+
+// Line icons (24px grid, drawn with strokes). Built as SVG elements, never parsed from a string of markup.
+const ICONS = {
+  home: ["M3 10.5 12 3l9 7.5", "M5 9.5V20h5v-6h4v6h5V9.5"],
+  inbox: ["M3 13h5l2 3h4l2-3h5", "M5 5h14l2 8v6H3v-6z"],
+  flag: ["M5 21V4", "M5 4h11l-2 4 2 4H5"],
+  phone: ["M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a1 1 0 0 1-1 1A16 16 0 0 1 4 5a1 1 0 0 1 1-1"],
+  cash: ["M3 6h18v12H3z", "M12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5", "M6 9v.01M18 15v.01"],
+  layers: ["M12 3 3 8l9 5 9-5z", "M3 13l9 5 9-5"],
+  shield: ["M12 3 4 6v6c0 4.5 3.4 7.7 8 9 4.6-1.3 8-4.5 8-9V6z", "M9 12l2 2 4-4"],
+  chart: ["M4 20V10", "M10 20V4", "M16 20v-7", "M22 20H2"],
+  file: ["M6 3h8l4 4v14H6z", "M14 3v4h4", "M9 12h6M9 16h6"],
+  upload: ["M12 16V4", "M7 9l5-5 5 5", "M4 16v4h16v-4"],
+  split: ["M12 21v-7", "M12 14 6 8V3", "M12 14l6-6V3"],
+  key: ["M14 10a4 4 0 1 0-1.2 2.8L21 21", "M17 17l2-2", "M8.5 8.5v.01"],
+  menu: ["M4 7h16M4 12h16M4 17h16"],
+  out: ["M10 4H5v16h5", "M14 8l4 4-4 4", "M18 12H9"],
+};
+function icon(name) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", width: "18", height: "18", fill: "none", stroke: "currentColor",
+    "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", class: "ic" })) svg.setAttribute(k, v);
+  for (const d of ICONS[name] || []) { const path = document.createElementNS(NS, "path"); path.setAttribute("d", d); svg.append(path); }
+  return svg;
+}
 
 const inst = () => `/institutions/${state.me.institution_id}`;
 
@@ -197,21 +223,34 @@ async function refreshCounts() {
 }
 
 function shell(name, content) {
-  const nav = h("nav", { class: "nav", "aria-label": "Sections" },
-    Object.entries(VIEWS).filter(([, v]) => can(v.need)).map(([key, v]) => {
-      const n = v.badge ? v.badge() : 0;
-      return h("a", { href: `#/${key}`, "data-view": key, "aria-current": key === name ? "page" : null },
-        v.label, n ? h("span", { class: "badge", "aria-label": `${n} open` }, n) : null);
-    }));
-  const top = h("header", { class: "top" }, h("div", { class: "top-in" },
-    h("a", { class: "brand", href: "#/dashboard", "aria-label": "Sawazi dashboard" },
-      h("img", { src: "logo.svg", alt: "", width: "28", height: "28" }), h("span", { class: "mark" }, "sawazi"),
-      h("span", { class: "inst" }, state.me.institution_name || "")),
-    nav,
-    h("div", { class: "who" },
-      h("span", null, state.me.name, " ", h("span", { class: "muted" }, `· ${state.me.role.replace("_", " ")}`)),
-      h("button", { type: "button", class: "link", onclick: () => signOut() }, "Log out"))));
-  document.getElementById("app").replaceChildren(top, h("main", { id: "main" }, content));
+  const groups = [];
+  for (const [key, v] of Object.entries(VIEWS)) {
+    if (!can(v.need)) continue;
+    let g = groups.find((x) => x.name === v.group);
+    if (!g) groups.push(g = { name: v.group, links: [] });
+    const n = v.badge ? v.badge() : 0;
+    g.links.push(h("a", { href: `#/${key}`, "data-view": key, "aria-current": key === name ? "page" : null },
+      icon(v.icon), h("span", { class: "lbl" }, v.label), n ? h("span", { class: "badge", "aria-label": `${n} open` }, n) : null));
+  }
+  const close = () => document.body.classList.remove("nav-open");
+  const side = h("aside", { class: "side", id: "side" },
+    h("a", { class: "brand", href: "#/dashboard", "aria-label": "Sawazi dashboard", onclick: close },
+      h("img", { src: "logo.svg", alt: "", width: "32", height: "32" }),
+      h("span", null, h("span", { class: "mark" }, "sawazi"), h("span", { class: "inst" }, state.me.institution_name || ""))),
+    h("nav", { class: "nav", "aria-label": "Sections", onclick: close }, groups.map((g) =>
+      h("div", { class: "nav-group" }, h("div", { class: "nav-title" }, g.name), g.links))),
+    h("div", { class: "me" },
+      h("span", { class: "avatar", "aria-hidden": "true" }, state.me.name.split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase()),
+      h("span", { class: "me-txt" }, h("b", null, state.me.name), h("span", null, (ROLE_LABEL[state.me.role] || state.me.role))),
+      h("button", { type: "button", class: "icon-btn", "aria-label": "Log out", title: "Log out", onclick: () => signOut() }, icon("out"))));
+  const bar = h("header", { class: "topbar" },
+    h("button", { type: "button", class: "icon-btn", "aria-label": "Menu", "aria-controls": "side",
+      onclick: () => document.body.classList.toggle("nav-open") }, icon("menu")),
+    h("img", { src: "logo.svg", alt: "", width: "26", height: "26" }), h("span", { class: "mark" }, "sawazi"));
+  document.body.classList.remove("nav-open");
+  document.getElementById("app").replaceChildren(h("div", { class: "shell" }, side,
+    h("div", { class: "scrim", onclick: close }),
+    h("div", { class: "content" }, bar, h("main", { id: "main" }, content))));
 }
 
 async function route() {
@@ -278,7 +317,8 @@ async function viewDashboard() {
             [r.a, r.s, r.u].map((v) => h("td", { class: "n" }, v.count, h("div", { class: "muted small" }, kes(v.kes)))))))))));
 
   return [
-    h("div", { class: "head" }, h("h1", null, "Dashboard"), h("p", { class: "muted" }, d.institution)),
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Dashboard"),
+      h("p", { class: "muted" }, `${d.institution}: how payments are landing and what needs a person today.`))),
     kpis,
     unconfirmed.length ? note("warn", `${plural(unconfirmed.length, "real-time M-Pesa payment")} not yet on a paybill statement after 48 hours. Upload the latest statement to confirm them.`) : null,
     h("div", { class: "grid2" }, excPanel, txPanel),
