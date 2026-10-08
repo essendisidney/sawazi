@@ -98,6 +98,9 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
   lengths and concurrency that SQLite does not
 - Demo: `python scripts/make_sample_data.py && python scripts/run_demo.py && python scripts/build_dashboard.py`
 - API: `uvicorn sawazi.api:app --reload` then http://localhost:8000/docs
+- Deploy: `deploy/` Docker kit (PostgreSQL, app, Caddy HTTPS, nightly backups), guide in `docs/DEPLOY.md`;
+  `python -m sawazi.setup_institution` for a new SACCO. The app trusts the client address Caddy forwards, so its
+  port must never be published. New `SAWAZI_*` settings go in `deploy/.env.example` (`tests/test_deploy.py`)
 
 ## Quality bar
 - Anything that allocates money (matching, C2B, clearing suspense) runs inside `matching_lock(s, institution_id)`.

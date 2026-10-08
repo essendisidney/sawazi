@@ -1,0 +1,27 @@
+# HTTPS in front of Sawazi. Caddy gets and renews the certificate itself (Let's Encrypt) once the domain's
+# DNS points at this server and ports 80 and 443 are open. With SAWAZI_DOMAIN=localhost it uses a local test
+# certificate instead, for trying the kit on a laptop.
+{$SAWAZI_DOMAIN} {
+	encode zstd gzip
+
+	# Statements and exports are small; refuse anything absurd before it reaches the app.
+	request_body {
+		max_size 25MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# Caddy replaces any X-Forwarded-For sent by the caller with the real address, so the app's
+	# Daraja and USSD allow-lists see who actually called.
+	reverse_proxy app:8000
+
+	log {
+		output stdout
+		format console
+	}
+}

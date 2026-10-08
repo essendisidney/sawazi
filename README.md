@@ -42,7 +42,11 @@ Uses SQLite locally. For production set `SAWAZI_DB_URL=postgresql+psycopg://...`
 The schema is managed by Alembic (`migrations/`). The API applies pending migrations when it starts, and refuses
 to start on a database created before migrations existed (delete local fictional databases and start again).
 
-Production (least cost: one small VPS plus a small managed PostgreSQL 16, or PostgreSQL on the same VPS):
+**For a pilot, use the Docker kit in `deploy/` and follow [docs/DEPLOY.md](docs/DEPLOY.md)**: one small server
+runs PostgreSQL, the app, HTTPS (Caddy) and nightly backups; `python -m sawazi.setup_institution` sets up the
+SACCO and its first admin.
+
+Without Docker (least cost: one small VPS plus a small managed PostgreSQL 16, or PostgreSQL on the same VPS):
 
 ```bash
 export SAWAZI_DB_URL=postgresql+psycopg://sawazi:<password>@<host>:5432/sawazi
