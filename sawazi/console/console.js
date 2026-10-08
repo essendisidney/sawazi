@@ -170,6 +170,7 @@ const VIEWS = {
   loans: { label: "Loans", need: "read", render: viewLoans },
   risk: { label: "Risk", need: "read", render: viewRisk },
   board: { label: "Board pack", need: "read", render: viewBoard },
+  returns: { label: "Returns", need: "returns", render: viewReturns },
   upload: { label: "Upload", need: "reconcile", render: viewUpload },
   rules: { label: "Allocation rules", need: "read", render: viewRules },
   products: { label: "Products", need: "read", render: viewProducts },
@@ -1226,6 +1227,49 @@ async function viewBoard() {
           h("td", { class: "n" }, kes(x.balance_kes)), h("td", { class: "n" }, pct(x.par30_pct)), h("td", { class: "n" }, kes(x.provision_kes)),
           h("td", { class: "n" }, x.flags)))))));
   return [h("div", { class: "head" }, h("h1", null, "Board pack")), panel, table];
+}
+
+// ------------------------------------------------------------------ SASRA returns
+
+async function viewReturns() {
+  const r = await api(`${inst()}/returns/form4`);
+  const t = r.totals;
+  const slot = h("div");
+  const download = h("button", { type: "button", class: "primary" }, "Download loan-by-loan schedule (CSV)");
+  download.addEventListener("click", () => busy(download, slot, async () => {
+    const res = await fetch(`${inst()}/returns/form4.csv`, { headers: { Authorization: `Bearer ${state.token}` } });
+    if (!res.ok) throw new ApiError(res.status, "Could not create the file");
+    const name = (res.headers.get("content-disposition") || "").match(/filename=([\w.-]+)/)?.[1] || "sawazi_form4_schedule.csv";
+    const a = h("a", { href: URL.createObjectURL(await res.blob()), download: name });
+    document.body.append(a); a.click(); a.remove();
+  }));
+  const rows = r.classes.map((c) => h("tr", null, h("td", null, CLASS_LABEL[c.class]), h("td", { class: "num" }, c.days),
+    h("td", { class: "n" }, c.loans), h("td", { class: "n" }, kes(c.balance_kes)), h("td", { class: "n" }, pct(c.provision_pct)),
+    h("td", { class: "n" }, kes(c.provision_kes)),
+    h("td", { class: "n" }, ["substandard", "doubtful", "loss"].includes(c.class) ? kes(c.interest_arrears_kes) : "–")));
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "SASRA returns"),
+      h("p", { class: "muted" }, "Working papers for SASRA's statutory returns, from the figures Sawazi holds."))),
+    note("warn", "Working schedule, not the official form. Use it to fill SASRA's Form 4 template, and confirm the classes and rates against the current regulations before filing."),
+    h("section", { class: "panel pad stack" },
+      h("div", { class: "item-top" }, h("h2", null, `Form 4: risk classification of assets and provisioning, ${r.quarter}`),
+        h("span", { class: "pill" }, `Due ${when(r.due + "T00:00:00")}`)),
+      h("p", { class: "muted small" }, `Loans as they stand on ${when(r.generated_on + "T00:00:00")}. The latest loans upload is as at ${when(r.as_of + "T00:00:00")}.`),
+      r.is_quarter_end ? null : note("info", `The latest upload is not the quarter-end (${when(r.quarter_end + "T00:00:00")}). Upload the quarter-end loans export with that "as at" date, then download straight away.`),
+      h("div", { class: "tbl-wrap" }, h("table", null,
+        h("thead", null, h("tr", null, h("th", null, "Class"), h("th", null, "Days behind"), h("th", { class: "n" }, "Loans"),
+          h("th", { class: "n" }, "Outstanding"), h("th", { class: "n" }, "Rate"), h("th", { class: "n" }, "Provision"),
+          h("th", { class: "n" }, "Interest to suspend"))),
+        h("tbody", null, rows,
+          h("tr", null, h("td", null, h("b", null, "Total")), h("td", null, ""), h("td", { class: "n" }, h("b", null, t.loans)),
+            h("td", { class: "n" }, h("b", null, kes(t.balance_kes))), h("td", null, ""), h("td", { class: "n" }, h("b", null, kes(t.provision_kes))),
+            h("td", { class: "n" }, h("b", null, kes(t.interest_to_suspend_kes))))))),
+      h("p", { class: "small" }, `Non-performing (substandard, doubtful, loss): ${kes(t.npl_balance_kes)}, ${pct(t.npl_pct)} of loans.`),
+      h("p", { class: "muted small" }, r.interest_known
+        ? "Interest to suspend uses the interest arrears in your loans export. Loans exported without that breakdown count as zero here; check them in the CSV."
+        : "Your loans export has no interest arrears column, so interest to suspend cannot be worked out. Add \"Interest Arrears\" to the export."),
+      h("div", null, download), slot),
+  ];
 }
 
 // ------------------------------------------------------------------ go

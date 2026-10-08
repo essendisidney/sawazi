@@ -13,6 +13,7 @@ when its "done when" is true.
 | 5 | Taifa Mobile USSD: service code, sandbox run, gateway IPs | Sidney (Taifa account) | USSD consent |
 | 6 | Daraja C2B tested in the Safaricom sandbox | Sidney (Daraja app) | Real-time M-Pesa |
 | 7 | Core-system guarantee export, and SASRA classification rates checked | Sidney + pilot SACCO | Risk view |
+| 8 | SASRA Form 4 and Form 3 templates in the repo; provisioning policy answers | Sidney | Filing returns from Sawazi |
 
 ---
 
@@ -182,3 +183,14 @@ performing, watch 1-30 days, substandard 31-180, doubtful 181-360, loss over 360
 before the provision figure is used for anything official.
 
 **Done when:** the pilot SACCO's guarantee export uploads with no rejected rows, and the classes and rates are confirmed.
+
+## 8. SASRA returns
+
+Sawazi has a Form 4 working schedule (console, Returns). To fill SASRA's forms in their exact layout it needs:
+
+1. The current **Form 4** (risk classification of assets and provisioning) Excel template, and **Form 3** (deposit
+   return) if wanted, from SASRA's website or a SACCO's last filing, saved in the repository.
+2. Answers from the pilot SACCO's credit policy: are deposits held against a loan netted off before provisioning,
+   and do rescheduled loans keep their earlier classification?
+
+**Done when:** Sawazi's output, pasted into the official template, matches a return the SACCO filed by hand.

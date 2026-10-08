@@ -31,7 +31,7 @@ Python 3.11 or later.
 pip install -r requirements.txt
 python scripts/make_sample_data.py      # fictional test data
 python scripts/run_demo.py              # full pipeline -> demo_output.json
-python -m pytest -q                     # 250 tests
+python -m pytest -q                     # 260 tests
 uvicorn sawazi.api:app --reload          # API at http://localhost:8000/docs
 ```
 
@@ -164,6 +164,19 @@ Trends come from **snapshots** of portfolio quality. One is taken after every lo
 month-end export its "as at" date when uploading it a few days late (`as_of` on the loans upload and on
 `POST /institutions/{id}/snapshots`), so it counts for the month it describes. Months without a snapshot are reported
 as missing, never estimated.
+
+## SASRA returns (Phase 3)
+
+The console's **Returns** page (admins and accountants) has a **working schedule for SASRA Form 4**, the risk
+classification of assets and provisioning, due quarterly by the 15th of the following month:
+- loans by class, with outstanding balance, rate and required provision;
+- non-performing loans and their share of the book;
+- interest to suspend on substandard, doubtful and loss loans, from the interest arrears in the loans export;
+- a loan-by-loan CSV that traces every total.
+
+It is a working paper for filling SASRA's template, not the official form. Upload the quarter-end loans export with
+its "as at" date, then download straight away. Classes and rates (1%, 5%, 25%, 50%, 100% for 0, 1-30, 31-180,
+181-360 and 360+ days) must be confirmed against the current regulations before filing.
 
 ## Allocation rules
 
@@ -301,6 +314,7 @@ curl -X POST localhost:8000/institutions/1/admin -H "X-API-Key: $SAWAZI_API_KEY"
 | GET | `/institutions/{id}/risk` | Classification and provisioning, PAR by product and employer, concentration, guarantor network, flags |
 | GET/POST | `/institutions/{id}/snapshots` | Portfolio snapshots (`as_of` to date one) |
 | GET | `/institutions/{id}/board-pack.html?month=YYYY-MM` | The month's board pack (download) |
+| GET | `/institutions/{id}/returns/form4` and `form4.csv` | SASRA Form 4 working schedule, and every loan behind it |
 | GET/PUT | `/institutions/{id}/allocation-rules` | How payments are split (admin changes) |
 | POST | `/institutions/{id}/allocation-rules/preview` | Show how a member's payment would be split, changing nothing |
 | GET | `/institutions/{id}/members?q=` | Find a member by number, name, phone or ID number, with active loans |
@@ -334,6 +348,7 @@ sawazi/
   engine/exposure.py   risk report: classification, PAR, concentration, guarantor flags (pure)
   risk.py              builds the risk report from the database
   boardpack.py         portfolio snapshots and the monthly board pack (HTML, no scripts)
+  returns.py           SASRA return working papers (Form 4 schedule)
   daraja.py            M-Pesa Daraja C2B callback parsing, URL registration
   console/             staff web console (static HTML/CSS/JS served at /console/)
   importers/           CSV parsing for every source
@@ -349,7 +364,7 @@ tests/                 pytest suite
 
 ## Next
 
-Phase 3 in progress: the risk and exposure view and the board pack are built. Next: regulatory returns, then the member app.
+Phase 3 in progress: the risk and exposure view, board pack and Form 4 working schedule are built. Waiting on SASRA's official Form 4 (and Form 3) templates to fill their exact layout; then the member app.
 
 Before any real member data: ODPC registration and a data processing agreement with each pilot institution.
 

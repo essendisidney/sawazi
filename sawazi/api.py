@@ -28,7 +28,7 @@ from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import audit, auth, boardpack, daraja, guarantors, risk, sms, ussd
+from . import audit, auth, boardpack, daraja, guarantors, returns, risk, sms, ussd
 from .auth import API_KEY_ROLES, PERMISSIONS, ROLES, Principal, require
 from .db import get_session, init_db
 from .engine.checkoff import reconcile_checkoff
@@ -1837,6 +1837,39 @@ def board_pack(institution_id: int, month: str = Query(..., pattern=r"^\d{4}-(0[
     s.commit()
     name = f"sawazi_board_pack_{month}.html"
     return HTMLResponse(doc, headers={"Content-Disposition": f"attachment; filename={name}"})
+
+
+# ---------------------------------------------------------------- SASRA return working papers
+
+@app.get("/institutions/{institution_id}/returns/form4", tags=["returns"])
+def form4_schedule(institution_id: int, s: Session = Depends(get_session),
+                   who: Principal = Depends(require("returns"))):
+    """Working schedule for SASRA Form 4 (risk classification of assets and provisioning). A working paper to fill
+    SASRA's template from, not the official form. Loan-level detail: form4.csv."""
+    _inst(s, institution_id)
+    r = returns.form4_schedule(s, institution_id, auth.utcnow().date())
+    return _kes_fields({k: v for k, v in r.items() if k != "lines"})
+
+
+@app.get("/institutions/{institution_id}/returns/form4.csv", tags=["returns"])
+def form4_lines(institution_id: int, s: Session = Depends(get_session), who: Principal = Depends(require("returns"))):
+    """Every active loan with its class, rate and provision, so each Form 4 total can be checked loan by loan."""
+    _inst(s, institution_id)
+    r = returns.form4_schedule(s, institution_id, auth.utcnow().date())
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([f"Sawazi working schedule for SASRA Form 4, {r['quarter']}. Loans as at {r['generated_on']}; "
+                f"latest loans upload as at {r['as_of']}. Not the official form."])
+    w.writerow(["loan_no", "member_no", "member_name", "product", "principal", "balance", "days_in_arrears",
+                "class", "provision_rate_pct", "provision", "interest_arrears"])
+    for x in r["lines"]:
+        w.writerow([x.loan_no, x.member_no, x.member, x.product, f"{x.principal_cents / 100:.2f}",
+                    f"{x.balance_cents / 100:.2f}", x.days_in_arrears, x.loan_class, f"{x.rate_bps / 100:g}",
+                    f"{x.provision_cents / 100:.2f}", f"{x.interest_arrears_cents / 100:.2f}"])
+    audit.record(s, who, "returns.form4_download", note=f"Form 4 working schedule {r['quarter']}")
+    s.commit()
+    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv", headers={
+        "Content-Disposition": f"attachment; filename=sawazi_form4_schedule_{r['quarter'].replace(' ', '_')}.csv"})
 
 
 # ---------------------------------------------------------------- staff web console

@@ -26,8 +26,12 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
    never counted twice; pledges from both count towards capacity
 2. Snapshots + board pack DONE (`sawazi/boardpack.py`): snapshots dated by the figures' as-at date (loans upload
    `as_of`), never back-filled; pack is one escaped HTML file with an In brief summary, SVG charts, governance in words
-3. Then: regulatory returns. Ask first whether pilots are SASRA deposit-taking SACCOs or MFIs (CBK); SASRA
-   classification rates in `exposure.CLASSES` must be checked against the current SASRA form
+3. Regulatory returns: pilots are SASRA deposit-taking SACCOs. Form 4 WORKING SCHEDULE DONE (`sawazi/returns.py`,
+   console Returns page, loan-level CSV): a working paper, never presented as the official form. Waiting on Sidney for
+   SASRA's official Form 4 (and Form 3 deposit return) templates; build the exact layout only from the real template,
+   never from memory. Open policy questions: netting deposits before provisioning; rescheduled-loan classification.
+   `exposure.CLASSES` rates (1/5/25/50/100%) match the regulation text for the first three and a CPA summary for the
+   rest; confirm against the gazetted text
 4. Then: member app (ask about its form first)
 
 ## Phase 2 — done
