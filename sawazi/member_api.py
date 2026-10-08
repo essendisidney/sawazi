@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -250,8 +250,27 @@ def whoami(me: SignedIn = Depends(current_member), s: Session = Depends(get_sess
 
 # ---------------------------------------------------------------- staff: switch off a member's app access
 
+@router.get("/institutions/{institution_id}/members/{member_no}/app-access", tags=["members"],
+            dependencies=[Depends(require("manage_users"))])
+def app_access(institution_id: int, member_no: str, s: Session = Depends(get_session)):
+    """Which phones a member has signed in to the app on, and whether wrong PINs have locked it."""
+    m = s.scalar(select(Member).where(Member.institution_id == institution_id, Member.member_no == member_no))
+    if not m:
+        raise HTTPException(404, "member not found")
+    cred = s.scalar(select(MemberCredential).where(MemberCredential.member_id == m.id))
+    devices = s.scalars(select(MemberDevice).where(MemberDevice.institution_id == institution_id,
+                                                   MemberDevice.member_id == m.id).order_by(MemberDevice.id.desc()))
+    now = utcnow()
+    return {"member_no": m.member_no, "name": m.name, "phone": m.phone, "has_pin": cred is not None,
+            "locked_until": cred.locked_until if cred and cred.locked_until and cred.locked_until > now else None,
+            "devices": [{"id": d.id, "label": d.label, "created_at": d.created_at, "last_used_at": d.last_used_at,
+                         "revoked_at": d.revoked_at} for d in devices]}
+
+
 @router.post("/institutions/{institution_id}/members/{member_no}/app-access/revoke", tags=["members"])
-def revoke_app_access(institution_id: int, member_no: str, note: str, s: Session = Depends(get_session),
+def revoke_app_access(institution_id: int, member_no: str,
+                      note: str = Query(..., min_length=3, max_length=500, description="why, e.g. 'phone stolen'"),
+                      s: Session = Depends(get_session),
                       who: Principal = Depends(require("manage_users"))):
     """Sign a member out of the app on every phone (lost phone, suspected fraud). They can sign in again only
     with an SMS code to their registered number."""

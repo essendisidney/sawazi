@@ -59,7 +59,8 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 2. Audit log DONE (`sawazi/audit.py`)
 3. SMS DONE via Taifa Mobile (`sawazi/sms.py`; no Taifa sandbox, so `simulate` is the default provider). Delivery callbacks, opt-outs, staff-approval-only sending. Left: confirm with Taifa the number format (we send 2547XXXXXXXX) and API key length before the first live send
 4. Daraja C2B DONE (`sawazi/daraja.py`, `scripts/daraja_register.py`). Validation always accepts; statement uploads confirm every callback. Left: test against the Daraja sandbox; if Safaricom sends hashed MSISDNs, consider matching on the hash of member phones
-5. Staff web console DONE (`sawazi/console/`, run `scripts/console_demo.py`). Left: admin screens (staff users, API keys, SMS settings, opt-outs, audit log) still API-only
+5. Staff web console DONE (`sawazi/console/`, run `scripts/console_demo.py`), including the Admin page (staff,
+   API keys, SMS settings and opt-outs, member app access, audit log)
 6. Allocation rules DONE (`sawazi/engine/allocation.py`). Penalty/interest arrears come from the core export, never computed by Sawazi. Defaults must keep reproducing the original split. Left: share-capital rules that need the member's share balance (e.g. 'until minimum shares reached') wait until the core export carries it
 7. Alembic + PostgreSQL DONE (`migrations/`, `alembic upgrade head` on deploy; API also migrates on start). Suite passes on PostgreSQL 16 (`SAWAZI_TEST_DB_URL`)
 

@@ -189,3 +189,10 @@ dialog::backdrop { background: rgb(0 0 0 / 0.45); }
 .out-incomplete, .app-submitted, .gs-requested { background: var(--warn-soft); color: var(--warn); }
 .app-exported { background: var(--info-soft); }
 .gs-released, .gs-cancelled, .gs-expired { background: var(--info-soft); }
+.chips a.chip { border: 1px solid var(--line); border-radius: 99px; font-size: 0.85rem; padding: 5px 13px; text-decoration: none; color: var(--ink); background: var(--surface); }
+.chips a.chip[aria-current="page"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.panel.list .member { border-radius: 0; border-width: 1px 0 0; }
+.panel.list .member:first-child { border-top: 0; }
+td select { min-width: 10rem; }
+.stack > form.panel { max-width: 640px; }
+.nowrap { white-space: nowrap; }

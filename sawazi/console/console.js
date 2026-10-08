@@ -174,6 +174,7 @@ const VIEWS = {
   upload: { label: "Upload", need: "reconcile", render: viewUpload },
   rules: { label: "Allocation rules", need: "read", render: viewRules },
   products: { label: "Products", need: "read", render: viewProducts },
+  admin: { label: "Admin", need: "manage_users", render: viewAdmin },
 };
 
 const inst = () => `/institutions/${state.me.institution_id}`;
@@ -1270,6 +1271,286 @@ async function viewReturns() {
         : "Your loans export has no interest arrears column, so interest to suspend cannot be worked out. Add \"Interest Arrears\" to the export."),
       h("div", null, download), slot),
   ];
+}
+
+// ------------------------------------------------------------------ admin
+
+const ROLE_LABEL = { admin: "Admin", accountant: "Accountant", credit_officer: "Credit officer", approver: "Approver (credit committee)", viewer: "Viewer" };
+const STAFF_ROLES = Object.keys(ROLE_LABEL);
+const KEY_ROLES = ["accountant", "credit_officer", "viewer"];
+const ADMIN_TABS = [["staff", "Staff"], ["keys", "API keys"], ["sms", "SMS"], ["app", "Member app"], ["audit", "Audit log"]];
+function roleSelect(roles, value, label) {
+  const sel = h("select", { "aria-label": label || "Role" }, roles.map((r) => h("option", { value: r }, ROLE_LABEL[r])));
+  sel.value = value;
+  return sel;
+}
+
+async function viewAdmin(tab) {
+  const key = ADMIN_TABS.some(([k]) => k === tab) ? tab : "staff";
+  const body = await { staff: adminStaff, keys: adminKeys, sms: adminSms, app: adminApp, audit: adminAudit }[key]();
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Admin"),
+      h("p", { class: "muted" }, "Who can use Sawazi, the systems connected to it, SMS settings, and the record of every change."))),
+    h("nav", { class: "chips", "aria-label": "Admin sections" }, ADMIN_TABS.map(([k, label]) =>
+      h("a", { class: "chip", href: `#/admin/${k}`, "aria-current": k === key ? "page" : null }, label))),
+    body,
+  ];
+}
+
+async function adminStaff() {
+  const users = await api(`${inst()}/users`);
+  const rows = users.map((u) => {
+    const slot = h("div");
+    const self = u.id === state.me.id;
+    const role = roleSelect(STAFF_ROLES, u.role, `Role of ${u.name}`);
+    role.addEventListener("change", () => busy(role, slot, async () => {
+      const ok = await confirmDialog(`Make ${u.name} ${ROLE_LABEL[role.value].toLowerCase()}?`,
+        h("p", null, "They are logged out everywhere and log in again with the new role."), "Change role");
+      if (!ok) { role.value = u.role; return; }
+      await api(`${inst()}/users/${u.id}`, { method: "PATCH", body: { role: role.value } });
+      route();
+    }));
+    const reset = h("button", { type: "button" }, "Reset password");
+    reset.addEventListener("click", () => busy(reset, slot, async () => {
+      const pw = h("input", { type: "password", autocomplete: "new-password", minlength: "10" });
+      const ok = await confirmDialog(`New password for ${u.name}`, h("div", { class: "stack" },
+        h("p", { class: "small" }, "At least 10 characters. Tell them in person or by phone, never by SMS or email. They are logged out everywhere."),
+        h("label", null, "New password", pw)), "Set password");
+      if (!ok) return;
+      await api(`${inst()}/users/${u.id}`, { method: "PATCH", body: { password: pw.value } });
+      slot.replaceChildren(note("ok", `Password changed for ${u.name}.`));
+    }));
+    const toggle = h("button", { type: "button", class: u.is_active ? "danger" : null }, u.is_active ? "Switch off" : "Switch on");
+    toggle.addEventListener("click", () => busy(toggle, slot, async () => {
+      if (u.is_active && !await confirmDialog(`Switch off ${u.name}?`,
+        h("p", null, "They are logged out at once and cannot log in until switched on again. Their past actions stay in the audit log."),
+        "Switch off", { danger: true })) return;
+      await api(`${inst()}/users/${u.id}`, { method: "PATCH", body: { is_active: !u.is_active } });
+      route();
+    }));
+    return h("tr", null,
+      h("td", null, h("b", null, u.name), u.is_active ? null : h("span", { class: "pill" }, "Switched off"),
+        h("div", { class: "muted small" }, u.email)),
+      h("td", null, self ? ROLE_LABEL[u.role] : role),
+      h("td", { class: "small" }, u.last_login_at ? when(u.last_login_at) : h("span", { class: "muted" }, "Never")),
+      h("td", null, self ? h("span", { class: "muted small" }, "You. Another admin changes your access.") :
+        h("div", { class: "actions" }, reset, toggle), slot));
+  });
+  return h("div", { class: "stack" },
+    h("section", { class: "panel" }, h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Staff member"), h("th", null, "Role"), h("th", null, "Last login"), h("th", null, ""))),
+      h("tbody", null, rows)))),
+    newStaffForm());
+}
+
+function newStaffForm() {
+  const name = h("input", { type: "text", required: true, maxlength: "200" });
+  const email = h("input", { type: "email", required: true, maxlength: "254", autocomplete: "off" });
+  const role = roleSelect(STAFF_ROLES, "viewer");
+  const pw = h("input", { type: "password", required: true, minlength: "10", autocomplete: "new-password" });
+  const slot = h("div"), add = h("button", { type: "submit", class: "primary" }, "Add staff member");
+  return h("form", { class: "panel pad stack", onsubmit: (e) => {
+    e.preventDefault();
+    busy(add, slot, async () => {
+      await api(`${inst()}/users`, { method: "POST", body: { name: name.value.trim(), email: email.value.trim(), role: role.value, password: pw.value } });
+      route();
+    });
+  } }, h("h2", null, "Add a staff member"),
+    h("label", null, "Name", name), h("label", null, "Work email (their login)", email), h("label", null, "Role", role),
+    h("p", { class: "muted small" }, "Give each person the smallest role that does the job. Approvers sit on the credit committee and cannot approve applications they prepared."),
+    h("label", null, "First password (at least 10 characters)", pw),
+    h("p", { class: "muted small" }, "Tell them in person. They can change it themselves once logged in."),
+    slot, add);
+}
+
+async function adminKeys() {
+  const keys = await api(`${inst()}/api-keys`);
+  const slot = h("div");
+  const rows = keys.map((k) => {
+    const revoke = h("button", { type: "button", class: "danger" }, "Revoke");
+    revoke.addEventListener("click", () => busy(revoke, slot, async () => {
+      if (!await confirmDialog(`Revoke "${k.name}"?`, h("p", null, "Whatever uses this key stops working at once. This cannot be undone; create a new key if needed."),
+        "Revoke", { danger: true })) return;
+      await api(`${inst()}/api-keys/${k.id}`, { method: "DELETE" });
+      route();
+    }));
+    return h("tr", null, h("td", null, h("b", null, k.name), h("div", { class: "num muted small" }, `${k.prefix}…`)),
+      h("td", null, ROLE_LABEL[k.role]), h("td", { class: "small" }, when(k.created_at)),
+      h("td", { class: "small" }, k.last_used_at ? when(k.last_used_at) : h("span", { class: "muted" }, "Never")),
+      h("td", null, k.revoked_at ? h("span", { class: "pill" }, `Revoked ${when(k.revoked_at)}`) : revoke));
+  });
+  const name = h("input", { type: "text", required: true, maxlength: "100", placeholder: "e.g. core banking nightly export" });
+  const role = roleSelect(KEY_ROLES, "accountant");
+  const out = h("div"), create = h("button", { type: "submit", class: "primary" }, "Create key");
+  const form = h("form", { class: "panel pad stack", onsubmit: (e) => {
+    e.preventDefault();
+    busy(create, out, async () => {
+      const k = await api(`${inst()}/api-keys`, { method: "POST", body: { name: name.value.trim(), role: role.value } });
+      const shown = h("input", { type: "text", readonly: true, value: k.key, class: "num", "aria-label": "New API key" });
+      const copy = h("button", { type: "button" }, "Copy");
+      copy.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(k.key); copy.textContent = "Copied"; } catch { shown.select(); }
+      });
+      await confirmDialog("Copy the key now", h("div", { class: "stack" },
+        note("warn", "This is the only time the full key is shown. Sawazi keeps only a fingerprint of it."),
+        h("div", { class: "row-form" }, shown, copy),
+        h("p", { class: "small" }, "Put it straight into the other system's settings. Never send it by email or chat.")), "I have stored it", { info: true });
+      route();
+    });
+  } }, h("h2", null, "New API key"),
+    h("p", { class: "muted small" }, "For another system, such as your core banking export, to send files to Sawazi. A key can never approve loans, send SMS, clear suspense or change access."),
+    h("label", null, "What uses it", name), h("label", null, "Allowed to act as", role), out, create);
+  return h("div", { class: "grid2" },
+    h("section", { class: "panel stack" }, slot, keys.length ? h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Key"), h("th", null, "Acts as"), h("th", null, "Created"), h("th", null, "Last used"), h("th", null, ""))),
+      h("tbody", null, rows))) : h("div", { class: "empty" }, "No API keys yet.")),
+    form);
+}
+
+async function adminSms() {
+  const [st, outs] = await Promise.all([api(`${inst()}/sms/settings`), api(`${inst()}/sms/opt-outs`)]);
+  const enabled = h("input", { type: "checkbox", checked: st.enabled ? true : null });
+  const service = h("input", { type: "text", maxlength: "100", value: st.service_name || "", placeholder: "As registered with Taifa Mobile" });
+  const optText = h("input", { type: "text", maxlength: "160", value: st.opt_out_text || "", placeholder: "e.g. Reply STOP to stop these messages" });
+  const slot = h("div"), save = h("button", { type: "submit", class: "primary" }, "Save SMS settings");
+  const settings = h("form", { class: "panel pad stack", onsubmit: (e) => {
+    e.preventDefault();
+    busy(save, slot, async () => {
+      if (enabled.checked && !st.enabled && !await confirmDialog("Switch SMS on?",
+        h("p", null, "Staff can then send messages to members. Every message is still approved by a person before it goes."), "Switch on")) return;
+      const r = await api(`${inst()}/sms/settings`, { method: "PUT",
+        body: { enabled: enabled.checked, service_name: service.value.trim() || null, opt_out_text: optText.value.trim() || null } });
+      st.enabled = r.enabled;
+      slot.replaceChildren(note("ok", "Saved."));
+    });
+  } }, h("h2", null, "SMS settings"),
+    h("label", { class: "check" }, enabled, "Members can be sent SMS"),
+    h("label", null, "Sender service name", service), h("label", null, "Opt-out line added to reminders", optText),
+    h("p", { class: "muted small" }, "The Taifa Mobile account keys are set on the server, never here."), slot, save);
+  const oslot = h("div");
+  const rows = outs.map((o) => {
+    const back = h("button", { type: "button" }, "Opt back in");
+    back.addEventListener("click", () => busy(back, oslot, async () => {
+      const why = h("input", { type: "text", maxlength: "300", placeholder: "e.g. member asked in branch on 3 Oct" });
+      const ok = await confirmDialog(`Send SMS to ${o.phone} again?`, h("div", { class: "stack" },
+        h("p", { class: "small" }, "Only when the member has asked for it themselves. The reason is kept in the audit log."),
+        h("label", null, "Why", why)), "Opt back in");
+      if (!ok) return;
+      if (why.value.trim().length < 3) throw new ApiError(422, "Give the reason the member gave.");
+      await api(`${inst()}/sms/opt-outs/${encodeURIComponent(o.phone)}`, { method: "DELETE", params: { note: why.value.trim() } });
+      route();
+    }));
+    return h("tr", null, h("td", { class: "num" }, o.phone), h("td", { class: "small" }, o.source === "staff" ? "Recorded by staff" : "Member replied STOP"),
+      h("td", { class: "small" }, when(o.created_at)), h("td", { class: "small" }, o.note || ""), h("td", null, back));
+  });
+  const phone = h("input", { type: "tel", required: true, placeholder: "07XX XXX XXX" });
+  const why = h("input", { type: "text", maxlength: "300", placeholder: "e.g. called in on 3 Oct" });
+  const add = h("button", { type: "submit" }, "Stop SMS to this number");
+  const addForm = h("form", { class: "row-form", onsubmit: (e) => {
+    e.preventDefault();
+    busy(add, oslot, async () => {
+      await api(`${inst()}/sms/opt-outs`, { method: "POST", body: { phone: phone.value, note: why.value.trim() || null } });
+      route();
+    });
+  } }, h("label", null, "Phone", phone), h("label", null, "Note", why), add);
+  return h("div", { class: "grid2" }, settings,
+    h("section", { class: "panel pad stack" }, h("h2", null, `Opted out of SMS (${outs.length})`),
+      h("p", { class: "muted small" }, "Sawazi never sends SMS to these numbers."), addForm, oslot,
+      outs.length ? h("div", { class: "tbl-wrap" }, h("table", null,
+        h("thead", null, h("tr", null, h("th", null, "Phone"), h("th", null, "How"), h("th", null, "Since"), h("th", null, "Note"), h("th", null, ""))),
+        h("tbody", null, rows))) : h("div", { class: "empty" }, "Nobody has opted out.")));
+}
+
+async function adminApp() {
+  const q = h("input", { type: "search", required: true, placeholder: "Member number, name or phone", "aria-label": "Find member" });
+  const go = h("button", { type: "submit" }, "Find");
+  const out = h("div", { class: "stack" });
+  const show = async (memberNo) => {
+    const a = await api(`${inst()}/members/${encodeURIComponent(memberNo)}/app-access`);
+    const live = a.devices.filter((d) => !d.revoked_at);
+    const slot = h("div");
+    const off = h("button", { type: "button", class: "danger" }, "Sign out of the app on every phone");
+    off.addEventListener("click", () => busy(off, slot, async () => {
+      const why = h("input", { type: "text", maxlength: "500", placeholder: "e.g. phone stolen, reported by the member in branch" });
+      const ok = await confirmDialog(`Switch off the app for ${a.name}?`, h("div", { class: "stack" },
+        h("p", { class: "small" }, `They are signed out at once. To use the app again they need an SMS code sent to ${a.phone || "their registered number"}. If that number has changed, update it in the core system and upload members again first.`),
+        h("label", null, "Why", why)), "Switch off", { danger: true });
+      if (!ok) return;
+      if (why.value.trim().length < 3) throw new ApiError(422, "Give a reason.");
+      await api(`${inst()}/members/${encodeURIComponent(memberNo)}/app-access/revoke`, { method: "POST", params: { note: why.value.trim() } });
+      await show(memberNo);
+    }));
+    out.replaceChildren(h("section", { class: "panel pad stack" },
+      h("div", { class: "item-top" }, h("h2", null, `${a.name} · ${a.member_no}`), h("span", { class: "num muted" }, a.phone || "")),
+      !a.has_pin ? note("info", "Has never set up the app.")
+        : live.length ? note("ok", `Signed in on ${plural(live.length, "phone")}.`) : note("info", "Not signed in on any phone."),
+      a.locked_until ? note("warn", `Locked after wrong PINs until ${when(a.locked_until)}. It unlocks by itself, or the member can sign in again with an SMS code.`) : null,
+      a.devices.length ? h("div", { class: "tbl-wrap" }, h("table", null,
+        h("thead", null, h("tr", null, h("th", null, "Phone"), h("th", null, "Set up"), h("th", null, "Last used"), h("th", null, ""))),
+        h("tbody", null, a.devices.map((d) => h("tr", null, h("td", { class: "small" }, (d.label || "Unknown").slice(0, 60)),
+          h("td", { class: "small" }, when(d.created_at)), h("td", { class: "small" }, d.last_used_at ? when(d.last_used_at) : ""),
+          h("td", null, h("span", { class: "pill" }, d.revoked_at ? `Signed out ${when(d.revoked_at)}` : "Active"))))))) : null,
+      live.length ? h("div", null, off) : null, slot));
+  };
+  const form = h("form", { class: "row-form", onsubmit: (e) => {
+    e.preventDefault();
+    busy(go, out, async () => {
+      const found = await api(`${inst()}/members`, { params: { q: q.value.trim() } });
+      if (found.length === 1) return show(found[0].member_no);
+      out.replaceChildren(found.length ? h("div", { class: "panel list" }, found.map((m) => {
+        const open = h("button", { type: "button" }, "Open");
+        open.addEventListener("click", () => busy(open, out, () => show(m.member_no)));
+        return h("div", { class: "member" }, h("span", null, h("b", null, m.name), " ", h("span", { class: "num muted" }, m.member_no),
+          m.phone ? h("span", { class: "num muted small" }, ` · ${m.phone}`) : null), open);
+      })) : note("info", "No member found."));
+    });
+  } }, h("label", { class: "sr" }, "Search"), q, go);
+  return h("div", { class: "stack" }, h("section", { class: "panel pad stack" }, h("h2", null, "Member app access"),
+    h("p", { class: "muted small" }, "See where a member uses the app, and switch it off if their phone is lost or something looks wrong. Staff never see or set a member's PIN."),
+    form), out);
+}
+
+const AUDIT_GROUPS = [["", "Everything"], ["user.", "Staff"], ["auth.", "Logins"], ["api_key.", "API keys"], ["sms.", "SMS"],
+  ["loan_application.", "Loan applications"], ["guarantee.", "Guarantees"], ["member_app.", "Member app"],
+  ["exception.", "Suspense and exceptions"], ["allocation_rules.", "Allocation rules"], ["loan_product.", "Products"],
+  ["import.", "Uploads"], ["export.", "Exports"]];
+let auditGroup = "";
+
+function auditChange(e) {
+  const b = e.before || {}, a = e.after || {};
+  const show = (v) => v === null || v === undefined ? "–" : typeof v === "object" ? JSON.stringify(v) : String(v);
+  return [...new Set([...Object.keys(b), ...Object.keys(a)])].slice(0, 8)
+    .map((k) => k in b && k in a ? `${k}: ${show(b[k])} → ${show(a[k])}` : `${k}: ${show(k in a ? a[k] : b[k])}`).join(" · ");
+}
+
+async function adminAudit() {
+  const list = h("tbody");
+  const more = h("button", { type: "button" }, "Show older");
+  const slot = h("div");
+  let last = null;
+  const load = async () => {
+    const rows = await api(`${inst()}/audit`, { params: { action: auditGroup, before_id: last, limit: 100 } });
+    list.append(...rows.map((e) => h("tr", null,
+      h("td", { class: "small num nowrap" }, when(e.at)),
+      h("td", { class: "small" }, e.actor_name || e.actor_kind, h("div", { class: "muted" }, e.actor_kind.replace("_", " "))),
+      h("td", { class: "small" }, h("b", null, e.action),
+        e.entity_type ? h("div", { class: "muted" }, `${e.entity_type.replace(/_/g, " ")} ${e.entity_id ?? ""}`) : null),
+      h("td", { class: "small" }, auditChange(e), e.note ? h("div", null, h("i", null, `“${e.note}”`)) : null))));
+    if (rows.length) last = rows[rows.length - 1].id;
+    more.hidden = rows.length < 100;
+    if (!list.children.length) list.append(h("tr", null, h("td", { colspan: "4", class: "empty" }, "Nothing recorded yet.")));
+  };
+  more.addEventListener("click", () => busy(more, slot, load));
+  const group = h("select", { "aria-label": "Show" }, AUDIT_GROUPS.map(([k, label]) => h("option", { value: k }, label)));
+  group.value = auditGroup;
+  group.addEventListener("change", () => { auditGroup = group.value; route(); });
+  await load();
+  return h("section", { class: "panel pad stack" },
+    h("div", { class: "item-top" }, h("h2", null, "Audit log"), h("label", { class: "row-form small" }, "Show", group)),
+    h("p", { class: "muted small" }, "Every manual action, newest first. Nobody can change or delete it."),
+    h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "When"), h("th", null, "Who"), h("th", null, "What"), h("th", null, "Change"))), list)),
+    slot, h("div", null, more));
 }
 
 // ------------------------------------------------------------------ go
