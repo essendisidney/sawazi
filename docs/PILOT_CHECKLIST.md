@@ -14,6 +14,7 @@ when its "done when" is true.
 | 6 | Daraja C2B tested in the Safaricom sandbox | Sidney (Daraja app) | Real-time M-Pesa |
 | 7 | Core-system guarantee export, and SASRA classification rates checked | Sidney + pilot SACCO | Risk view |
 | 8 | SASRA Form 4 and Form 3 templates in the repo; provisioning policy answers | Sidney | Filing returns from Sawazi |
+| 9 | Pilot server: hosting chosen, deployed, backups copied off the server, a restore tested | Pesara (Sidney) | Going live |
 
 ---
 
@@ -198,3 +199,13 @@ Sawazi has a Form 4 working schedule (console, Returns). To fill SASRA's forms i
    and do rescheduled loans keep their earlier classification?
 
 **Done when:** Sawazi's output, pasted into the official template, matches a return the SACCO filed by hand.
+
+## 9. Pilot server
+
+Follow `docs/DEPLOY.md`: one small server running the Docker kit in `deploy/` (PostgreSQL, the app, HTTPS, nightly
+backups). Choose where it is hosted together with item 0: the Data Protection Act treats hosting outside Kenya as
+a transfer that needs its own safeguards. Keep the member app quiet until real SMS is on (item 4): in simulate mode
+sign-in codes are written to the server log.
+
+**Done when:** the SACCO's domain answers `ok` at `/healthz` over HTTPS, the platform key is off the server,
+backups are copied off the server every day, and a restore into a scratch database matches the live counts.

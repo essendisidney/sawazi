@@ -208,3 +208,26 @@ def test_api_end_to_end_on_sample_data(monkeypatch):
     csv_out = c.get(f"/institutions/{iid}/exports/postings.csv").text
     assert csv_out.startswith("date,source,reference,member_no")
     app.dependency_overrides.clear()
+
+
+def test_health_check_needs_no_login_and_says_little():
+    from fastapi.testclient import TestClient
+
+    from sawazi.api import app
+    from sawazi.db import get_session
+    from tests.conftest import make_engine
+    from sqlalchemy.orm import sessionmaker
+
+    engine = make_engine()
+    Session = sessionmaker(bind=engine)
+
+    def session():
+        with Session() as s:
+            yield s
+
+    app.dependency_overrides[get_session] = session
+    try:
+        r = TestClient(app).get("/healthz")
+        assert r.status_code == 200 and r.text == "ok" and r.headers["cache-control"] == "no-store"
+    finally:
+        app.dependency_overrides.pop(get_session, None)

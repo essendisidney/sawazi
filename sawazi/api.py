@@ -1910,6 +1910,17 @@ async def console_security_headers(request: Request, call_next):
     return response
 
 
+@app.get("/healthz", include_in_schema=False)
+def healthz(s: Session = Depends(get_session)):
+    """For the container health check and uptime monitors. Says only whether the database answers."""
+    try:
+        s.execute(text("SELECT 1"))
+    except Exception:
+        logging.getLogger("sawazi").exception("health check: database not reachable")
+        return PlainTextResponse("database unavailable", status_code=503, headers={"Cache-Control": "no-store"})
+    return PlainTextResponse("ok", headers={"Cache-Control": "no-store"})
+
+
 @app.get("/", include_in_schema=False)
 def root():
     return RedirectResponse("/console/")

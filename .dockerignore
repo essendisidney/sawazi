@@ -1,0 +1,8 @@
+# Only the code goes into the image: no data, no secrets.
+*
+!requirements.txt
+!alembic.ini
+!migrations/
+!sawazi/
+**/__pycache__
+**/*.pyc
