@@ -43,7 +43,7 @@ def test_shell_scripts_keep_unix_line_endings():
 def test_vercel_installs_the_same_packages_as_requirements():
     import tomllib
 
-    dev = {"pytest", "httpx"}
+    dev = {"pytest"}
     req = [x.strip() for x in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
            if x.strip() and not x.startswith("#")]
     runtime = sorted(r for r in req if re.split(r"[<>=\[]", r)[0] not in dev)
