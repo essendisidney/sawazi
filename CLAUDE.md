@@ -35,7 +35,10 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 4. Member app DONE (`sawazi/member_api.py` at `/m/...`, `sawazi/app/` at `/app/`): web app on the phone, SMS code then
    own PIN per phone, English/Kiswahili. Member tokens (`mbr_`) never reach staff endpoints. Shows only the member's
    own records; answers guarantees via `guarantors.record_answer`; applications arrive as console drafts
-   (`source=member_app`), so maker-checker still holds. Never caches member data on the phone
+   (`source=member_app`), so maker-checker still holds. Never caches member data on the phone. Every member-facing
+   message has Kiswahili in `member_api.SWAHILI` (test enforces it)
+5. Pilot polish DONE: staff choose their own password after anyone else set it (`must_change_password`, enforced in
+   `auth.current_principal`); institutions can be marked `is_demo` (banner in console and app)
 
 ## Phase 2 — done
 1. Member balances and pay DONE (members export columns + `member_balances` import; unknown is never zero)

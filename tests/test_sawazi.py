@@ -176,12 +176,22 @@ def test_api_end_to_end_on_sample_data(monkeypatch):
     r = c.post(f"/institutions/{iid}/admin", headers=pk,
                json={"email": "admin@ufanisi.test", "name": "Admin", "role": "admin", "password": "admin-pass-123"})
     assert r.status_code == 200, r.text
-    tok = c.post("/auth/login", json={"email": "admin@ufanisi.test", "password": "admin-pass-123"}).json()["token"]
-    admin = {"Authorization": f"Bearer {tok}"}
-    c.post(f"/institutions/{iid}/users", headers=admin,
-           json={"email": "acc@ufanisi.test", "name": "Accountant", "role": "accountant", "password": "acc-pass-1234"})
-    tok = c.post("/auth/login", json={"email": "acc@ufanisi.test", "password": "acc-pass-1234"}).json()["token"]
-    c.headers.update({"Authorization": f"Bearer {tok}"})
+    def first_login(email, given, own):
+        """Someone else chose `given`: nothing works until the person picks their own password."""
+        h = {"Authorization": f"Bearer {c.post('/auth/login', json={'email': email, 'password': given}).json()['token']}"}
+        assert c.get("/auth/me", headers=h).json()["must_change_password"] is True
+        assert c.get(f"/institutions/{iid}/dashboard", headers=h).status_code == 403
+        assert c.post("/auth/password", headers=h, json={"current_password": given, "new_password": given}).status_code == 422
+        r = c.post("/auth/password", headers=h, json={"current_password": given, "new_password": own})
+        assert r.status_code == 200, r.text
+        assert c.get("/auth/me", headers=h).json()["must_change_password"] is False
+        return h
+
+    admin = first_login("admin@ufanisi.test", "admin-pass-123", "admin-own-pass-456")
+    r = c.post(f"/institutions/{iid}/users", headers=admin,
+               json={"email": "acc@ufanisi.test", "name": "Accountant", "role": "accountant", "password": "acc-pass-1234"})
+    assert r.status_code == 200, r.text
+    c.headers.update(first_login("acc@ufanisi.test", "acc-pass-1234", "acc-own-pass-5678"))
     for kind, f in [("members", "members.csv"), ("loans", "loans.csv"), ("mpesa", "mpesa_statement.csv"),
                     ("bank", "bank_statement.csv")]:
         r = c.post(f"/institutions/{iid}/import/{kind}", files={"file": (f, (DATA / f).read_bytes())})

@@ -27,8 +27,9 @@ institution first.
 
 ## 1. Swahili on the guarantor page and in the member app
 
-The member app's words are in `sawazi/app/app.js` (the `T.sw` block, next to the English). Some messages still
-come from the server in English (wrong code, wrong PIN, the loan check's reasons).
+The member app's words are in `sawazi/app/app.js` (the `T.sw` block, next to the English), and the server's
+messages to members (wrong code, wrong PIN, lockouts, guarantee and application errors) in `sawazi/member_api.py`
+(`SWAHILI`). Only the loan check's reasons are still English.
 
 
 The page a guarantor opens from the SMS link (`sawazi/guarantors.py`, `summary()`, and the buttons in

@@ -29,6 +29,16 @@ DEMO_USERS = [("admin", "Wanjiru Admin"), ("accountant", "Otieno Accountant"),
               ("credit_officer", "Chebet Credit Officer"), ("approver", "Njeri Approver"), ("viewer", "Mutua Viewer")]
 
 
+def demo_logins_ready():
+    """Fictional demo logins only: skip the choose-your-own-password step a real first login has."""
+    from sawazi.db import SessionLocal
+    from sawazi.models import StaffUser
+
+    with SessionLocal() as s:
+        s.query(StaffUser).update({StaffUser.must_change_password: False})
+        s.commit()
+
+
 def seed():
     from fastapi.testclient import TestClient
 
@@ -36,14 +46,17 @@ def seed():
 
     with TestClient(app) as c:
         pk = {"X-API-Key": os.environ["SAWAZI_API_KEY"]}
-        iid = c.post("/institutions", headers=pk, json={"name": "Ufanisi Teachers SACCO", "paybill": "522900"}).json()["id"]
+        iid = c.post("/institutions", headers=pk, json={"name": "Ufanisi Teachers SACCO", "paybill": "522900",
+                                                         "is_demo": True}).json()["id"]
         users = [{"email": f"{role.replace('_', '.')}@ufanisi.test", "name": name, "role": role, "password": DEMO_PASSWORD}
                  for role, name in DEMO_USERS]
         c.post(f"/institutions/{iid}/admin", headers=pk, json=users[0]).raise_for_status()
+        demo_logins_ready()
         tok = c.post("/auth/login", json={"email": users[0]["email"], "password": DEMO_PASSWORD}).json()["token"]
         c.headers["Authorization"] = f"Bearer {tok}"
         for u in users[1:]:
             c.post(f"/institutions/{iid}/users", json=u).raise_for_status()
+        demo_logins_ready()
 
         def upload(kind, name, **params):
             r = c.post(f"/institutions/{iid}/import/{kind}", params=params,

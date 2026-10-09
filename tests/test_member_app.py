@@ -65,7 +65,7 @@ def test_sign_in_with_sms_code_then_pin(members):
         ("SACCO A", "M1", "Achieng"), ("SACCO A", "M2", "Otieno"), ("SACCO B", "B7", "Achieng")}
     assert c.post("/m/devices", json={"verify_token": v["verify_token"], "membership": 10, "pin": "1111"}).status_code == 422
     r = c.post("/m/devices", json={"verify_token": v["verify_token"], "membership": 10, "pin": PIN}).json()
-    assert r["member"] == {"member_no": "M1", "name": "Achieng Owino", "institution": "SACCO A"}
+    assert r["member"] == {"member_no": "M1", "name": "Achieng Owino", "institution": "SACCO A", "is_demo": False}
     assert c.get("/m/me", headers=bearer(r["session_token"])).json()["member_no"] == "M1"
     again = c.post("/m/devices", json={"verify_token": v["verify_token"], "membership": 11, "pin": PIN})
     assert again.status_code == 400  # one code, one phone set up
@@ -296,3 +296,35 @@ def test_app_scripts_parse(name):
         pytest.skip("Node.js not installed")
     r = subprocess.run([node, "--check", str(APP_DIR / name)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_every_member_message_has_kiswahili(members):
+    """Each message the member API can send has a Kiswahili version, and members who chose Kiswahili get it."""
+    import ast
+    import inspect
+
+    from sawazi import member_api
+    from sawazi.member_api import in_swahili
+
+    messages = []
+    for node in ast.walk(ast.parse(inspect.getsource(member_api))):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "HTTPException" and len(node.args) > 1:
+            parts = [node.args[1]] if not isinstance(node.args[1], ast.IfExp) else [node.args[1].body, node.args[1].orelse]
+            for part in parts:
+                if isinstance(part, ast.Constant):
+                    messages.append(part.value)
+                elif isinstance(part, ast.JoinedStr):  # f-string: fill each {...} with a sample value
+                    messages.append("".join(v.value if isinstance(v, ast.Constant) else "3" for v in part.values))
+    messages += [weak_pin(p) for p in ("12", "1111", "1234")]
+    assert len(messages) > 15
+    staff_only = {"member not found"}  # the staff app-access endpoints in the same module stay English
+    missing = [m for m in messages if m not in staff_only and in_swahili(m) == m]
+    assert missing == [], missing
+
+    c, _, _ = members
+    sw = c.post("/m/login", json={"device_token": "mbr_nope", "pin": "4826"}, headers={"Accept-Language": "sw"})
+    assert sw.status_code == 401 and sw.json()["detail"] == "Simu hii haijawekwa. Ingia kwa nambari ya SMS."
+    en = c.post("/m/login", json={"device_token": "mbr_nope", "pin": "4826"})
+    assert en.json()["detail"] == "This phone is not set up. Sign in with an SMS code."
+    staff = c.get("/institutions/1/dashboard", headers={"Accept-Language": "sw"})  # staff messages stay English
+    assert staff.status_code == 401 and "Ingia" not in staff.text

@@ -282,3 +282,6 @@ dialog::backdrop { background: rgb(10 14 26 / 0.5); backdrop-filter: blur(2px); 
 .gs-released, .gs-cancelled, .gs-expired { background: var(--info-soft); color: var(--info); }
 .stack > form.panel { max-width: 680px; }
 @media (max-width: 700px) { .kpis { grid-template-columns: 1fr 1fr; gap: 10px; } .kpi { padding: 12px 14px; } .kpi .v { font-size: 1.25rem; } }
+
+.demo-banner { background: var(--gold); color: #2a1d00; font-weight: 600; font-size: 0.86rem; text-align: center; padding: 7px 16px; }
+.login details { color: var(--muted); }

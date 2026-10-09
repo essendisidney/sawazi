@@ -280,7 +280,7 @@ def _line_chart(trend: list) -> str:
 
 
 STYLE = """
-:root { --ink:#18201c; --muted:#5d6a63; --line:#dde2dc; --accent:#0f6b4f; --bad:#b3261e; --good:#1d7a44; --soft:#f5f6f3; }
+:root { --ink:#14213d; --muted:#646b7d; --line:#e4e5e9; --accent:#2f5bea; --gold:#f2b84b; --bad:#b3261e; --good:#17703f; --soft:#f6f5f0; }
 * { box-sizing: border-box; }
 body { margin: 0; font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif; color: var(--ink); font-size: 14px; line-height: 1.5; }
 main { max-width: 900px; margin: 0 auto; padding: 32px 24px 64px; }
@@ -302,7 +302,8 @@ svg.chart { width: 100%; height: auto; margin: 8px 0; }
 .chart .par1 { stroke: var(--accent); fill: var(--accent); } .chart text { font-size: 11px; fill: var(--muted); stroke: none; }
 .chart text.par30, .chart text.par1 { font-weight: 600; } .chart .grid { stroke: var(--line); }
 .note { background: var(--soft); border-radius: 8px; padding: 10px 12px; font-size: .88rem; }
-.brief { background: var(--soft); border-radius: 10px; padding: 4px 18px 10px; margin: 16px 0; }
+.brief { background: var(--soft); border-radius: 10px; padding: 4px 18px 10px; margin: 16px 0; border-left: 4px solid var(--gold); }
+.kpi { border-top: 3px solid var(--gold); }
 .brief h2 { border: 0; margin-top: 12px; padding-top: 0; } .brief ul { margin: 0; padding-left: 18px; }
 .brief li { margin: 6px 0; } h3 { font-size: 1rem; margin: 18px 0 4px; }
 @media print { main { padding: 0; } h2 { break-before: auto; } section { break-inside: avoid; } @page { size: A4; margin: 16mm; } }

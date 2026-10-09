@@ -81,6 +81,7 @@ class InstitutionIn(BaseModel):
     name: str
     kind: str = "sacco"
     paybill: str | None = None
+    is_demo: bool = False  # fictional data only; the console and member app say so on every page
 
 
 @app.post("/institutions", dependencies=[Depends(auth.platform_key)], tags=["platform"])
@@ -121,7 +122,7 @@ class PasswordIn(BaseModel):
 
 def _user_out(u: StaffUser) -> dict:
     return {"id": u.id, "institution_id": u.institution_id, "email": u.email, "name": u.name, "role": u.role,
-            "is_active": u.is_active, "last_login_at": u.last_login_at}
+            "is_active": u.is_active, "last_login_at": u.last_login_at, "must_change_password": u.must_change_password}
 
 
 def _user_state(u: StaffUser) -> dict:
@@ -134,7 +135,8 @@ def _create_user(s: Session, institution_id: int, body: StaffIn, who: Principal)
     if s.scalar(select(StaffUser.id).where(StaffUser.email == email)):
         raise HTTPException(409, "a user with this email already exists")
     u = StaffUser(institution_id=institution_id, email=email, name=body.name, role=body.role,
-                  password_hash=auth.hash_password(body.password), is_active=True)
+                  password_hash=auth.hash_password(body.password), is_active=True,
+                  must_change_password=True)  # someone else chose it
     s.add(u)
     s.flush()
     audit.record(s, who, "user.create", "staff_user", u.id, after=_user_state(u))
@@ -182,6 +184,7 @@ def me(user: StaffUser = Depends(auth.current_user), s: Session = Depends(get_se
     """Who is logged in, their institution, and what their role allows (the console hides the rest)."""
     inst = s.get(Institution, user.institution_id)
     return {**_user_out(user), "institution_name": inst.name if inst else None,
+            "institution_is_demo": bool(inst and inst.is_demo),
             "permissions": sorted(a for a, roles in PERMISSIONS.items() if user.role in roles)}
 
 
@@ -191,7 +194,10 @@ def change_password(body: PasswordIn, token: str = Depends(auth.bearer_token),
     if not auth.verify_password(body.current_password, user.password_hash):
         raise HTTPException(401, "current password is wrong")
     auth.check_password_policy(body.new_password)
+    if auth.verify_password(body.new_password, user.password_hash):
+        raise HTTPException(422, "choose a password different from the current one")
     user.password_hash = auth.hash_password(body.new_password)
+    user.must_change_password = False
     auth.revoke_sessions(s, user.id, except_token=token)
     audit.record(s, Principal.of(user), "auth.password_change", "staff_user", user.id)
     s.commit()
@@ -226,6 +232,7 @@ def update_user(institution_id: int, user_id: int, body: StaffPatch, s: Session 
     if body.password is not None:
         auth.check_password_policy(body.password)
         u.password_hash = auth.hash_password(body.password)
+        u.must_change_password = True  # the admin knows it; the person picks their own at next login
     if body.is_active is not None:
         u.is_active = body.is_active
     if body.is_active is False or body.password is not None or body.role is not None:
@@ -1911,6 +1918,19 @@ async def console_security_headers(request: Request, call_next):
 
 
 _schema_checked = False
+
+
+@app.exception_handler(HTTPException)
+async def member_messages_in_their_language(request: Request, exc: HTTPException):
+    """The member app sends Accept-Language: sw for members who chose Kiswahili; staff messages stay English."""
+    from fastapi.exception_handlers import http_exception_handler
+
+    from .member_api import in_swahili
+
+    if (request.url.path.startswith("/m/") and isinstance(exc.detail, str)
+            and request.headers.get("accept-language", "").lower().startswith("sw")):
+        exc = HTTPException(exc.status_code, in_swahili(exc.detail), headers=exc.headers)
+    return await http_exception_handler(request, exc)
 
 
 @app.get("/healthz", include_in_schema=False)
