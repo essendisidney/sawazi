@@ -38,3 +38,14 @@ def test_image_leaves_out_data_and_secrets():
 def test_shell_scripts_keep_unix_line_endings():
     assert b"\r\n" not in (DEPLOY / "backup.sh").read_bytes()
     assert "*.sh text eol=lf" in (ROOT / ".gitattributes").read_text(encoding="utf-8")
+
+
+def test_vercel_installs_the_same_packages_as_requirements():
+    import tomllib
+
+    dev = {"pytest", "httpx"}
+    req = [x.strip() for x in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+           if x.strip() and not x.startswith("#")]
+    runtime = sorted(r for r in req if re.split(r"[<>=\[]", r)[0] not in dev)
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert sorted(project["dependencies"]) == runtime
