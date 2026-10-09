@@ -71,6 +71,12 @@ docker run -d --name sawazi-pg-test -e POSTGRES_USER=sawazi -e POSTGRES_PASSWORD
 SAWAZI_TEST_DB_URL=postgresql+psycopg://sawazi:test@127.0.0.1:55432/sawazi_test python -m pytest -q
 ```
 
+## Public landing page
+
+`/` is a short public page: what Sawazi does, with links to the staff console and the member app. Its footer
+carries "A product of Pesara Limited"; the app screens themselves do not. Static, no scripts
+(`sawazi/site/`).
+
 ## Staff console
 
 A web console for SACCO staff, served by the API itself at `/console/` (plain HTML, CSS and JavaScript: no build
