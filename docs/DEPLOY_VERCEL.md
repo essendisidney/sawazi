@@ -62,5 +62,5 @@ Then remove `SAWAZI_API_KEY` from Vercel and redeploy.
 
 ## Checking the lockdown
 
-Supabase > Advisors > Security should show no "RLS disabled" errors for Sawazi's tables. If a table ever appears
+Supabase > Advisors > Security should show no "RLS disabled" errors and no warnings. One "RLS enabled, no policy" notice per table is expected and intended: no policy means no access through the public API. If a table ever appears
 there, run `alembic upgrade head` again: the lockdown runs after every upgrade.
