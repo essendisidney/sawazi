@@ -137,12 +137,14 @@ function renderLogin(message) {
     });
   } },
     h("div", { class: "login-brand" }, h("img", { src: "logo.svg", alt: "", width: "44", height: "44" }),
-      h("div", null, h("div", { class: "mark" }, "sawazi"), h("div", { class: "by" }, "BY PESARA"))),
+      h("div", null, h("div", { class: "mark" }, "sawazi"), h("div", { class: "by" }, "A PRODUCT OF PESARA LIMITED"))),
     h("h1", null, "Staff console"),
     message ? note("info", message) : null,
     h("label", null, "Email", email),
     h("label", null, "Password", password),
-    err, submit);
+    err, submit,
+    h("details", { class: "small" }, h("summary", null, "Forgotten your password?"),
+      h("p", { class: "muted" }, "Ask your SACCO's Sawazi admin to reset it (Admin, then Staff). You will choose your own new password when you next log in. Admins who are locked out: contact Pesara.")));
   document.getElementById("app").replaceChildren(h("div", { class: "login" }, form));
   email.focus();
 }
@@ -156,8 +158,35 @@ async function start() {
     if (e.status !== 401) renderLogin(e.message);
     return;
   }
+  if (state.me.must_change_password) return renderOwnPassword();
   if (!location.hash) location.hash = "#/dashboard";
   route();
+}
+
+function renderOwnPassword() {
+  const current = h("input", { type: "password", autocomplete: "current-password", required: true });
+  const next = h("input", { type: "password", autocomplete: "new-password", required: true, minlength: "10" });
+  const again = h("input", { type: "password", autocomplete: "new-password", required: true, minlength: "10" });
+  const err = h("div"), submit = h("button", { type: "submit", class: "primary" }, "Save my password");
+  const form = h("form", { class: "panel", onsubmit: (e) => {
+    e.preventDefault();
+    if (next.value !== again.value) { err.replaceChildren(note("err", "The two new passwords are different.")); return; }
+    busy(submit, err, async () => {
+      await api("/auth/password", { method: "POST", body: { current_password: current.value, new_password: next.value } });
+      await start();
+    });
+  } },
+    h("div", { class: "login-brand" }, h("img", { src: "logo.svg", alt: "", width: "44", height: "44" }),
+      h("div", null, h("div", { class: "mark" }, "sawazi"), h("div", { class: "by" }, "A PRODUCT OF PESARA LIMITED"))),
+    h("h1", null, "Choose your own password"),
+    note("info", `Welcome, ${state.me.name}. The password you just used was set by someone else, so pick one only you know before you start.`),
+    h("label", null, "The password you just used", current),
+    h("label", null, "New password (at least 10 characters)", next),
+    h("label", null, "New password again", again),
+    err, submit,
+    h("button", { type: "button", class: "link", onclick: () => signOut() }, "Log out"));
+  document.getElementById("app").replaceChildren(h("div", { class: "login" }, form));
+  current.focus();
 }
 
 // ------------------------------------------------------------------ shell and routing
@@ -250,7 +279,10 @@ function shell(name, content) {
   document.body.classList.remove("nav-open");
   document.getElementById("app").replaceChildren(h("div", { class: "shell" }, side,
     h("div", { class: "scrim", onclick: close }),
-    h("div", { class: "content" }, bar, h("main", { id: "main" }, content))));
+    h("div", { class: "content" }, bar,
+      state.me.institution_is_demo ? h("div", { class: "demo-banner", role: "note" },
+        "Demo SACCO: fictional data only. Never enter real member details here.") : null,
+      h("main", { id: "main" }, content))));
 }
 
 async function route() {
@@ -1354,7 +1386,7 @@ async function adminStaff() {
     reset.addEventListener("click", () => busy(reset, slot, async () => {
       const pw = h("input", { type: "password", autocomplete: "new-password", minlength: "10" });
       const ok = await confirmDialog(`New password for ${u.name}`, h("div", { class: "stack" },
-        h("p", { class: "small" }, "At least 10 characters. Tell them in person or by phone, never by SMS or email. They are logged out everywhere."),
+        h("p", { class: "small" }, "At least 10 characters. Tell them in person or by phone, never by SMS or email. They are logged out everywhere and must choose their own password when they next log in."),
         h("label", null, "New password", pw)), "Set password");
       if (!ok) return;
       await api(`${inst()}/users/${u.id}`, { method: "PATCH", body: { password: pw.value } });
@@ -1370,6 +1402,7 @@ async function adminStaff() {
     }));
     return h("tr", null,
       h("td", null, h("b", null, u.name), u.is_active ? null : h("span", { class: "pill" }, "Switched off"),
+        u.must_change_password ? h("span", { class: "pill" }, "Has not chosen a password yet") : null,
         h("div", { class: "muted small" }, u.email)),
       h("td", null, self ? ROLE_LABEL[u.role] : role),
       h("td", { class: "small" }, u.last_login_at ? when(u.last_login_at) : h("span", { class: "muted" }, "Never")),
@@ -1399,7 +1432,7 @@ function newStaffForm() {
     h("label", null, "Name", name), h("label", null, "Work email (their login)", email), h("label", null, "Role", role),
     h("p", { class: "muted small" }, "Give each person the smallest role that does the job. Approvers sit on the credit committee and cannot approve applications they prepared."),
     h("label", null, "First password (at least 10 characters)", pw),
-    h("p", { class: "muted small" }, "Tell them in person. They can change it themselves once logged in."),
+    h("p", { class: "muted small" }, "Tell them in person. They must choose their own password the first time they log in."),
     slot, add);
 }
 

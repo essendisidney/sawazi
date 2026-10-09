@@ -54,6 +54,49 @@ def weak_pin(pin: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------- Kiswahili
+# Every message the member API can send, in Kiswahili. The app sends Accept-Language: sw when the member has
+# chosen Kiswahili, and api.py translates the error before it leaves. Needs a native-speaker check before pilots
+# (docs/PILOT_CHECKLIST.md item 1). tests/test_member_app.py fails if a message here has no translation.
+SWAHILI: list[tuple[str, str]] = [
+    (r"please sign in", "Tafadhali ingia."),
+    (r"your session has ended, please sign in again", "Muda wako umekwisha. Tafadhali ingia tena."),
+    (r"please sign in again", "Tafadhali ingia tena."),
+    (r"Enter a Kenyan mobile number, e\.g\. 0712 345 678\.", "Weka nambari ya simu ya Kenya, kwa mfano 0712 345 678."),
+    (r"That code has expired\. Ask for a new one\.", "Nambari hiyo imeisha muda. Omba nyingine."),
+    (r"That code is not right\. (\d+) tries left\.", r"Nambari hiyo si sahihi. Umebakiza majaribio \1."),
+    (r"Too many tries\. Ask for a new code\.", "Umejaribu mara nyingi mno. Omba nambari mpya."),
+    (r"Please start again: ask for a new code\.", "Tafadhali anza upya: omba nambari mpya."),
+    (r"Use 4 to 6 digits\.", "Tumia tarakimu 4 hadi 6."),
+    (r"Don't use the same digit repeated\.", "Usitumie tarakimu moja inayojirudia."),
+    (r"Don't use digits in sequence\.", "Usitumie tarakimu zinazofuatana."),
+    (r"This phone is not set up\. Sign in with an SMS code\.", "Simu hii haijawekwa. Ingia kwa nambari ya SMS."),
+    (r"Too many wrong PINs\. Try again in (\d+) minutes, or sign in with an SMS code\.",
+     r"PIN zisizo sahihi zimezidi. Jaribu tena baada ya dakika \1, au ingia kwa nambari ya SMS."),
+    (r"Too many wrong PINs\. Try again in (\d+) minutes\.", r"PIN zisizo sahihi zimezidi. Jaribu tena baada ya dakika \1."),
+    (r"Wrong PIN\. (\d+) tries left\.", r"PIN si sahihi. Umebakiza majaribio \1."),
+    (r"request not found", "Ombi hilo halikupatikana."),
+    (r"This request is no longer open\.", "Ombi hili halipo wazi tena."),
+    (r"Your deposits no longer cover this amount\. Please talk to your SACCO\.",
+     "Akiba yako haitoshi tena kwa kiasi hiki. Tafadhali zungumza na SACCO yako."),
+    (r"product not found", "Aina hiyo ya mkopo haikupatikana."),
+    (r"You already have applications being looked at\. Please wait for those first\.",
+     "Una maombi ambayo bado yanaangaliwa. Tafadhali subiri hayo kwanza."),
+    (r"(\S+) is not another member of your SACCO\. Check the member number\.",
+     r"\1 si mwanachama mwingine wa SACCO yako. Angalia nambari ya uanachama."),
+]
+
+
+def in_swahili(message: str) -> str:
+    """The Kiswahili for one of the messages above; anything else is returned unchanged."""
+    import re
+
+    for pattern, sw in SWAHILI:
+        if re.fullmatch(pattern, message):
+            return re.sub(pattern, sw, message)
+    return message
+
+
 # ---------------------------------------------------------------- who is signed in
 
 @dataclass
@@ -91,7 +134,8 @@ def _new_session(s: Session, member: Member, device: MemberDevice) -> str:
 
 def _member_out(s: Session, m: Member) -> dict:
     inst = s.get(Institution, m.institution_id)
-    return {"member_no": m.member_no, "name": m.name, "institution": inst.name if inst else ""}
+    return {"member_no": m.member_no, "name": m.name, "institution": inst.name if inst else "",
+            "is_demo": bool(inst and inst.is_demo)}
 
 
 # ---------------------------------------------------------------- sign in on a new phone

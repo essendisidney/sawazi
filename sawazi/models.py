@@ -15,6 +15,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    false,
     Integer,
     JSON,
     String,
@@ -34,6 +35,7 @@ class Institution(Base):
     name: Mapped[str] = mapped_column(String(200))
     kind: Mapped[str] = mapped_column(String(20), default="sacco")  # sacco | mfi
     paybill: Mapped[str | None] = mapped_column(String(20))
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())  # fictional data only
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -203,6 +205,9 @@ class StaffUser(Base):
     role: Mapped[str] = mapped_column(String(20))  # admin | accountant | credit_officer | viewer
     password_hash: Mapped[str] = mapped_column(String(200))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Set when someone else chose the password (new account, admin reset): the person must pick their own
+    # before doing anything else, so nobody else ever knows a working password.
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
 

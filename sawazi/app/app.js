@@ -31,7 +31,7 @@ const T = {
     perMonth: "a month", upTo: "You may qualify for up to", couldBeLower: "could be lower: some figures are missing",
     needCover: "Guarantors needed for", purpose: "What is it for?", gNos: "Guarantors' member numbers (optional)",
     gHint: "Separate with commas. The SACCO will ask them.", send: "Send application", yourApps: "Your applications",
-    noApps: "No applications yet.", sent: "Sent. A credit officer will check it and contact your guarantors.", signout: "Sign out", offline: "Cannot reach your SACCO. Check your connection.",
+    noApps: "No applications yet.", sent: "Sent. A credit officer will check it and contact your guarantors.", signout: "Sign out", demo: "Demo SACCO: fictional data, not real accounts.", offline: "Cannot reach your SACCO. Check your connection.",
     looksGood: "Looks good so far.", notYet: "Some things need checking.", fails: "Not possible as it stands.",
     status: { draft: "With a credit officer", submitted: "Waiting for a decision", approved: "Approved", declined: "Declined",
       withdrawn: "Withdrawn", exported: "Being paid out", disbursed: "Paid out" },
@@ -57,7 +57,7 @@ const T = {
     perMonth: "kwa mwezi", upTo: "Unaweza kustahili hadi", couldBeLower: "huenda ikawa chini: baadhi ya taarifa hazipo",
     needCover: "Wadhamini wanahitajika kwa", purpose: "Ni wa kufanyia nini?", gNos: "Nambari za uanachama za wadhamini (si lazima)",
     gHint: "Tenganisha kwa koma. SACCO itawaomba.", send: "Tuma ombi", yourApps: "Maombi yako",
-    noApps: "Bado hakuna ombi.", sent: "Limetumwa. Afisa wa mikopo ataliangalia na kuwasiliana na wadhamini wako.", signout: "Toka", offline: "Hatuwezi kufikia SACCO yako. Angalia mtandao wako.",
+    noApps: "Bado hakuna ombi.", sent: "Limetumwa. Afisa wa mikopo ataliangalia na kuwasiliana na wadhamini wako.", signout: "Toka", demo: "SACCO ya majaribio: taarifa za kubuni, si akaunti halisi.", offline: "Hatuwezi kufikia SACCO yako. Angalia mtandao wako.",
     looksGood: "Inaonekana vizuri kwa sasa.", notYet: "Baadhi ya mambo yanahitaji kuangaliwa.", fails: "Haiwezekani kama ilivyo.",
     status: { draft: "Kwa afisa wa mikopo", submitted: "Inasubiri uamuzi", approved: "Umeidhinishwa", declined: "Umekataliwa",
       withdrawn: "Umeondolewa", exported: "Unatolewa", disbursed: "Umetolewa" },
@@ -94,7 +94,7 @@ const setDevice = (v) => { try { v ? localStorage.setItem(DEVICE_KEY, v) : local
 class ApiError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 
 async function api(path, { method = "GET", body } = {}) {
-  const headers = {};
+  const headers = { "Accept-Language": state.lang };
   if (state.session) headers.Authorization = `Bearer ${state.session}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
   let r;
@@ -138,7 +138,7 @@ function langButton(after) {
 
 function startScreen(...content) {
   const card = h("div", { class: "card" },
-    h("div", { class: "row" }, h("div", { class: "brand" }, h("img", { src: "logo.svg", alt: "" }), h("b", null, "sawazi")),
+    h("div", { class: "row" }, h("div", { class: "brand" }, h("img", { src: "logo.svg", alt: "" }), h("div", null, h("b", null, "sawazi"), h("div", { class: "by" }, "A product of Pesara Limited"))),
       langButton(() => location.reload())),
     ...content);
   document.getElementById("app").replaceChildren(h("div", { class: "start" }, card));
@@ -243,7 +243,8 @@ async function route() {
   const tabs = h("nav", { class: "tabs", "aria-label": "Sections" }, TABS.map(([k]) =>
     h("a", { href: `#/${k}`, "aria-current": k === key ? "page" : null }, icon(k), h("span", null, t(k)),
       k === "guarantees" && state.badge ? h("span", { class: "dot" }, state.badge) : null)));
-  document.getElementById("app").replaceChildren(top, main, tabs);
+  const demo = state.member.is_demo ? h("div", { class: "demo-banner", role: "note" }, t("demo")) : null;
+  document.getElementById("app").replaceChildren(top, demo, main, tabs);
   try { main.replaceChildren(...[await view()].flat(Infinity).filter(Boolean)); }
   catch (e) { if (e.status !== 401) main.replaceChildren(alertBox("bad", e.message)); }
 }

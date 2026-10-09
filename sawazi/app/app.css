@@ -132,3 +132,5 @@ dialog { border: 0; border-radius: 22px; padding: 0; width: min(420px, calc(100%
 dialog::backdrop { background: rgb(10 14 26 / .55); backdrop-filter: blur(2px); }
 .dlg { padding: 20px; display: grid; gap: 14px; }
 .dlg .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.demo-banner { background: var(--gold); color: #2a1d00; font-weight: 600; font-size: .84rem; text-align: center; padding: 7px 14px; }
+.start .brand .by { font-size: .7rem; color: var(--muted); letter-spacing: .04em; margin-top: 1px; }

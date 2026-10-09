@@ -41,6 +41,7 @@ def main() -> None:
     print("Set up a SACCO on Sawazi. Press Ctrl+C to stop; nothing is saved until all the questions are answered.\n")
     name = ask("SACCO name (as members know it)")
     paybill = ask("M-Pesa paybill number (leave empty if none)", required=False) or None
+    demo = ask("Is this a demo with fictional data only? (y/N)", required=False).lower().startswith("y")
     admin_name = ask("First admin's full name")
     email = ask("First admin's work email (their login)")
     while True:
@@ -51,14 +52,15 @@ def main() -> None:
             print("  The two passwords are different.")
         else:
             break
-    inst = call("/institutions", {"name": name, "paybill": paybill})
+    inst = call("/institutions", {"name": name, "paybill": paybill, "is_demo": demo})
     try:
         call(f"/institutions/{inst['id']}/admin", {"email": email, "name": admin_name, "role": "admin", "password": pw})
     except SystemExit as e:
         sys.exit(f"{e}\n{name} was created as institution {inst['id']}, but without an admin. Do not run this again "
                  f"(it would create a second {name}); ask Pesara to add the admin to institution {inst['id']}.")
     print(f"\nDone. {name} is institution {inst['id']}. {admin_name} can log in at /console/ as {email.lower()}.")
-    print("Next: they add staff under Admin > Staff. Then remove SAWAZI_API_KEY from deploy/.env and restart.")
+    print("At their first login they choose their own password. Then they add staff under Admin > Staff.")
+    print("Finally remove SAWAZI_API_KEY from the server settings and restart.")
 
 
 if __name__ == "__main__":

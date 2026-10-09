@@ -257,7 +257,7 @@ td select { min-width: 11rem; }
 .login-brand { display: flex; align-items: center; gap: 12px; }
 .login-brand img { border-radius: 11px; }
 .login-brand .mark { font-size: 1.6rem; line-height: 1; color: var(--ink); }
-.by { font-size: 0.66rem; letter-spacing: 0.2em; color: var(--muted); font-weight: 600; margin-top: 4px; }
+.by { font-size: 0.62rem; letter-spacing: 0.14em; color: var(--muted); font-weight: 600; margin-top: 4px; }
 .login button.primary { min-height: 42px; }
 
 /* ---------- dialog */
@@ -282,3 +282,6 @@ dialog::backdrop { background: rgb(10 14 26 / 0.5); backdrop-filter: blur(2px); 
 .gs-released, .gs-cancelled, .gs-expired { background: var(--info-soft); color: var(--info); }
 .stack > form.panel { max-width: 680px; }
 @media (max-width: 700px) { .kpis { grid-template-columns: 1fr 1fr; gap: 10px; } .kpi { padding: 12px 14px; } .kpi .v { font-size: 1.25rem; } }
+
+.demo-banner { background: var(--gold); color: #2a1d00; font-weight: 600; font-size: 0.86rem; text-align: center; padding: 7px 16px; }
+.login details { color: var(--muted); }

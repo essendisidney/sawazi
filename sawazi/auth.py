@@ -202,7 +202,10 @@ def current_principal(token: str = Depends(bearer_token), s: Session = Depends(g
     if token.startswith(API_KEY_PREFIX):
         k = _api_key(s, token)
         return Principal("api_key", k.id, k.institution_id, k.role, k.name)
-    return Principal.of(current_user(current_session(token, s), s))
+    user = current_user(current_session(token, s), s)
+    if user.must_change_password:
+        raise HTTPException(403, "Choose your own password first: log in to the console and set a new one.")
+    return Principal.of(user)
 
 
 def require(action: str):

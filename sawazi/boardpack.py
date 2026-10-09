@@ -280,7 +280,7 @@ def _line_chart(trend: list) -> str:
 
 
 STYLE = """
-:root { --ink:#18201c; --muted:#5d6a63; --line:#dde2dc; --accent:#0f6b4f; --bad:#b3261e; --good:#1d7a44; --soft:#f5f6f3; }
+:root { --ink:#14213d; --muted:#646b7d; --line:#e4e5e9; --accent:#2f5bea; --gold:#f2b84b; --bad:#b3261e; --good:#17703f; --soft:#f6f5f0; }
 * { box-sizing: border-box; }
 body { margin: 0; font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif; color: var(--ink); font-size: 14px; line-height: 1.5; }
 main { max-width: 900px; margin: 0 auto; padding: 32px 24px 64px; }
@@ -302,7 +302,8 @@ svg.chart { width: 100%; height: auto; margin: 8px 0; }
 .chart .par1 { stroke: var(--accent); fill: var(--accent); } .chart text { font-size: 11px; fill: var(--muted); stroke: none; }
 .chart text.par30, .chart text.par1 { font-weight: 600; } .chart .grid { stroke: var(--line); }
 .note { background: var(--soft); border-radius: 8px; padding: 10px 12px; font-size: .88rem; }
-.brief { background: var(--soft); border-radius: 10px; padding: 4px 18px 10px; margin: 16px 0; }
+.brief { background: var(--soft); border-radius: 10px; padding: 4px 18px 10px; margin: 16px 0; border-left: 4px solid var(--gold); }
+.kpi { border-top: 3px solid var(--gold); }
 .brief h2 { border: 0; margin-top: 12px; padding-top: 0; } .brief ul { margin: 0; padding-left: 18px; }
 .brief li { margin: 6px 0; } h3 { font-size: 1rem; margin: 18px 0 4px; }
 @media print { main { padding: 0; } h2 { break-before: auto; } section { break-inside: avoid; } @page { size: A4; margin: 16mm; } }
@@ -396,7 +397,7 @@ def render(inst: Institution, d: dict, generated_by: str) -> str:
 <div class="brand"><svg width="28" height="28" viewBox="0 0 100 100" aria-hidden="true"><rect width="100" height="100" rx="24" fill="#0d1f18"/>
 <path d="M72 22H42a14 14 0 0 0 0 28h7" fill="none" stroke="#4fc79a" stroke-width="13"/><circle cx="72" cy="22" r="6.5" fill="#4fc79a"/>
 <path d="M51 50h7a14 14 0 0 1 0 28H28" fill="none" stroke="#f2b84b" stroke-width="13"/><circle cx="28" cy="78" r="6.5" fill="#f2b84b"/></svg>
-SAWAZI BOARD PACK</div>
+SAWAZI BOARD PACK &middot; A PRODUCT OF PESARA LIMITED</div>
 <h1>{esc(title)}</h1>
 <p class="muted">Prepared by {esc(generated_by)} on {utcnow():%d %B %Y}. Sawazi works from the institution's own exports and payment records;
 the core banking system remains the book of record.</p>
