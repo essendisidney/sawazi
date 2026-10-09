@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["dub1"],
+  "functions": {
+    "sawazi/api.py": {
+      "maxDuration": 60,
+      "excludeFiles": "{tests/**,sample_data/**,deploy/**,docs/**,brand/**,scripts/**,*.db,*.html,demo_output.json}"
+    }
+  }
+}

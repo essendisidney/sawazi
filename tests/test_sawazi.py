@@ -210,24 +210,35 @@ def test_api_end_to_end_on_sample_data(monkeypatch):
     app.dependency_overrides.clear()
 
 
-def test_health_check_needs_no_login_and_says_little():
+def test_health_check_needs_no_login_and_reports_an_unmigrated_database():
     from fastapi.testclient import TestClient
-
-    from sawazi.api import app
-    from sawazi.db import get_session
-    from tests.conftest import make_engine
+    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
 
-    engine = make_engine()
-    Session = sessionmaker(bind=engine)
+    from sawazi import api
+    from sawazi.db import Base, get_session, migrate
 
-    def session():
-        with Session() as s:
-            yield s
+    def client_for(engine):
+        Session = sessionmaker(bind=engine)
 
-    app.dependency_overrides[get_session] = session
+        def session():
+            with Session() as s:
+                yield s
+        api.app.dependency_overrides[get_session] = session
+        api._schema_checked = False
+        return TestClient(api.app)
+
     try:
-        r = TestClient(app).get("/healthz")
+        built = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+        Base.metadata.create_all(built)  # tables, but no migration history
+        r = client_for(built).get("/healthz")
+        assert r.status_code == 503 and r.text == "database needs migrating"
+
+        migrated = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+        migrate(migrated)
+        r = client_for(migrated).get("/healthz")
         assert r.status_code == 200 and r.text == "ok" and r.headers["cache-control"] == "no-store"
     finally:
-        app.dependency_overrides.pop(get_session, None)
+        api.app.dependency_overrides.pop(get_session, None)
+        api._schema_checked = False

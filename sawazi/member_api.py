@@ -201,7 +201,7 @@ def register_device(body: DeviceIn, request: Request, s: Session = Depends(get_s
     s.flush()
     who = Principal("member", member.id, member.institution_id, "", member.name)
     audit.record(s, who, "member_app.device_added", "member_device", device.id, after={"label": device.label},
-                 ip=request.client.host if request.client else None)
+                 ip=auth.client_ip(request))
     session = _new_session(s, member, device)
     s.commit()
     return {"device_token": device_token, "session_token": session, "member": _member_out(s, member),
@@ -396,7 +396,7 @@ def answer_guarantee(guarantee_id: int, body: AnswerIn, request: Request, me: Si
     g = s.get(Guarantee, guarantee_id)
     if g is None or g.guarantor_member_id != me.member.id or g.institution_id != me.member.institution_id:
         raise HTTPException(404, "request not found")
-    result = guarantors.record_answer(s, g.id, body.answer, request.client.host if request.client else None, "app")
+    result = guarantors.record_answer(s, g.id, body.answer, auth.client_ip(request), "app")
     if result in ("closed", "capacity"):
         s.rollback()
         raise HTTPException(409, "This request is no longer open." if result == "closed"

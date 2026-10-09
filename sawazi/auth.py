@@ -27,6 +27,17 @@ from sqlalchemy.orm import Session
 from .db import get_session
 from .models import ApiKey, StaffSession, StaffUser
 
+def client_ip(request) -> str | None:
+    """The caller's address, for the audit log and the Daraja and USSD allow-lists. On Vercel the function sees
+    Vercel's proxy, so use x-real-ip, which Vercel sets itself and a caller cannot override. Elsewhere uvicorn
+    has already taken the address from a trusted reverse proxy (--proxy-headers)."""
+    if os.getenv("VERCEL"):
+        ip = request.headers.get("x-real-ip") or request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        if ip:
+            return ip
+    return request.client.host if request.client else None
+
+
 ROLES = ("admin", "accountant", "credit_officer", "approver", "viewer")
 SESSION_HOURS = 12
 MIN_PASSWORD_LEN = 10
