@@ -3,7 +3,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from sawazi import models  # noqa: F401  (registers every table on Base.metadata)
-from sawazi.db import DB_URL, Base
+from sawazi.db import DB_URL, SUPABASE_LOCKDOWN, Base
 
 config = context.config
 target_metadata = Base.metadata
@@ -22,11 +22,17 @@ def _opts(url: str) -> dict:
     }
 
 
+def _run() -> None:
+    context.run_migrations()
+    if context.get_context().dialect.name == "postgresql":
+        context.execute(SUPABASE_LOCKDOWN)  # after every upgrade, so new tables are covered too
+
+
 def run_offline() -> None:
     url = _url()
     context.configure(url=url, literal_binds=True, dialect_opts={"paramstyle": "named"}, **_opts(url))
     with context.begin_transaction():
-        context.run_migrations()
+        _run()
 
 
 def run_online() -> None:
@@ -34,14 +40,14 @@ def run_online() -> None:
     if connection is not None:  # handed in by sawazi.db.migrate()
         context.configure(connection=connection, **_opts(str(connection.engine.url)))
         with context.begin_transaction():
-            context.run_migrations()
+            _run()
         return
     url = _url()
     engine = engine_from_config({"sqlalchemy.url": url}, prefix="sqlalchemy.", poolclass=pool.NullPool)
     with engine.connect() as conn:
         context.configure(connection=conn, **_opts(url))
         with context.begin_transaction():
-            context.run_migrations()
+            _run()
 
 
 if context.is_offline_mode():

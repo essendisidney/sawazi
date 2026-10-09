@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from . import audit, auth, boardpack, daraja, guarantors, returns, risk, sms, ussd
 from .auth import API_KEY_ROLES, PERMISSIONS, ROLES, Principal, require
-from .db import get_session, init_db
+from .db import get_session, init_db, schema_is_current
 from .engine.checkoff import reconcile_checkoff
 from .engine.collections import build_queue, portfolio_at_risk
 from .engine import allocation, appraisal, exposure
@@ -153,7 +153,7 @@ def create_first_admin(institution_id: int, body: StaffIn, s: Session = Depends(
 
 @app.post("/auth/login", tags=["auth"])
 def login(body: LoginIn, request: Request, s: Session = Depends(get_session)):
-    ip = request.client.host if request.client else None
+    ip = auth.client_ip(request)
     user = auth.authenticate(s, body.email, body.password)
     if not user:
         known = s.scalar(select(StaffUser).where(StaffUser.email == body.email.strip().lower()))
@@ -871,7 +871,7 @@ def _c2b_guard(token: str, request: Request) -> str | None:
     expected = os.getenv("SAWAZI_DARAJA_CALLBACK_TOKEN")
     if not expected or not hmac.compare_digest(token, expected):
         raise HTTPException(404, "not found")
-    ip = request.client.host if request.client else None
+    ip = auth.client_ip(request)
     allowed = {x.strip() for x in os.getenv("SAWAZI_DARAJA_ALLOWED_IPS", "").split(",") if x.strip()}
     if allowed and ip not in allowed:
         log.warning("C2B callback from %s refused (not in SAWAZI_DARAJA_ALLOWED_IPS)", ip)
@@ -1701,7 +1701,7 @@ def consent_accept(token: str, request: Request, pin: str = Form(""), s: Session
         g.pin_attempts += 1
         s.commit()
         return _back(token, "pin-wrong")
-    result = guarantors.record_answer(s, g.id, "accept", request.client.host if request.client else None, "web")
+    result = guarantors.record_answer(s, g.id, "accept", auth.client_ip(request), "web")
     if result == "capacity":
         return _back(token, "capacity")
     s.commit()
@@ -1715,7 +1715,7 @@ def consent_decline(token: str, request: Request, s: Session = Depends(get_sessi
         return _consent_page(s, g, token)
     if guarantors.effective_status(g) != "requested":
         return _back(token)
-    guarantors.record_answer(s, g.id, "decline", request.client.host if request.client else None, "web")
+    guarantors.record_answer(s, g.id, "decline", auth.client_ip(request), "web")
     s.commit()
     return _back(token)
 
@@ -1740,7 +1740,7 @@ async def ussd_callback(token: str, request: Request, s: Session = Depends(get_s
     expected = os.getenv("SAWAZI_USSD_CALLBACK_TOKEN")
     if not expected or not hmac.compare_digest(token, expected):
         raise HTTPException(404, "not found")
-    ip = request.client.host if request.client else None
+    ip = auth.client_ip(request)
     allowed = {x.strip() for x in os.getenv("SAWAZI_USSD_ALLOWED_IPS", "").split(",") if x.strip()}
     if allowed and ip not in allowed:
         raise HTTPException(404, "not found")
@@ -1910,11 +1910,19 @@ async def console_security_headers(request: Request, call_next):
     return response
 
 
+_schema_checked = False
+
+
 @app.get("/healthz", include_in_schema=False)
 def healthz(s: Session = Depends(get_session)):
     """For the container health check and uptime monitors. Says only whether the database answers."""
+    global _schema_checked
     try:
         s.execute(text("SELECT 1"))
+        if not _schema_checked:  # once per process: a release whose migrations were not run must not look healthy
+            _schema_checked = schema_is_current(s.get_bind())
+            if not _schema_checked:
+                return PlainTextResponse("database needs migrating", status_code=503, headers={"Cache-Control": "no-store"})
     except Exception:
         logging.getLogger("sawazi").exception("health check: database not reachable")
         return PlainTextResponse("database unavailable", status_code=503, headers={"Cache-Control": "no-store"})

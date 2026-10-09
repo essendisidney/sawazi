@@ -1,0 +1,8 @@
+# Only used by Vercel to find the app. Dependencies are in requirements.txt.
+[project]
+name = "sawazi"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[tool.vercel]
+entrypoint = "sawazi.api:app"
