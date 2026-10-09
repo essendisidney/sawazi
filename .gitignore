@@ -11,3 +11,4 @@ sawazi_demo.html
 *.zip
 deploy/.env
 deploy/backups/
+.vercel
