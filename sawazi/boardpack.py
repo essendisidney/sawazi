@@ -397,7 +397,7 @@ def render(inst: Institution, d: dict, generated_by: str) -> str:
 <div class="brand"><svg width="28" height="28" viewBox="0 0 100 100" aria-hidden="true"><rect width="100" height="100" rx="24" fill="#0d1f18"/>
 <path d="M72 22H42a14 14 0 0 0 0 28h7" fill="none" stroke="#4fc79a" stroke-width="13"/><circle cx="72" cy="22" r="6.5" fill="#4fc79a"/>
 <path d="M51 50h7a14 14 0 0 1 0 28H28" fill="none" stroke="#f2b84b" stroke-width="13"/><circle cx="28" cy="78" r="6.5" fill="#f2b84b"/></svg>
-SAWAZI BOARD PACK &middot; A PRODUCT OF PESARA LIMITED</div>
+SAWAZI BOARD PACK</div>
 <h1>{esc(title)}</h1>
 <p class="muted">Prepared by {esc(generated_by)} on {utcnow():%d %B %Y}. Sawazi works from the institution's own exports and payment records;
 the core banking system remains the book of record.</p>
