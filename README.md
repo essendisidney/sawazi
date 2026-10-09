@@ -1,4 +1,6 @@
-# Sawazi by Pesara
+# Sawazi
+
+*A product of Pesara Limited.*
 
 Repayment matching, check-off reconciliation and collections for SACCOs and microfinance institutions.
 It sits beside any core banking system and works from the CSV/Excel exports every system can produce.

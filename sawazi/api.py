@@ -1,4 +1,4 @@
-"""Sawazi by Pesara — HTTP API.
+"""Sawazi, a product of Pesara Limited: HTTP API.
 
 Run:  uvicorn sawazi.api:app --reload
 Docs: http://localhost:8000/docs
@@ -46,7 +46,7 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(title="Sawazi by Pesara", version="0.1.0", lifespan=lifespan,
+app = FastAPI(title="Sawazi (a product of Pesara Limited)", version="0.1.0", lifespan=lifespan,
               description="Repayment matching, check-off reconciliation and collections for SACCOs and microfinance institutions.")
 
 _match_locks: dict[int, threading.Lock] = {}

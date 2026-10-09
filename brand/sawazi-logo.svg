@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 100" role="img" aria-labelledby="t">
-  <title id="t">Sawazi by Pesara</title>
+  <title id="t">Sawazi, a product of Pesara Limited</title>
   <!-- Horizontal lockup. The wordmark is live text in Bricolage Grotesque 700; convert it to outlines
        in Figma or Inkscape before sending to a printer. -->
   <rect width="100" height="100" rx="24" fill="#0d1f18"/>
@@ -10,5 +10,5 @@
   <text x="124" y="66" font-family="'Bricolage Grotesque', 'Segoe UI', system-ui, sans-serif" font-weight="700"
         font-size="60" letter-spacing="-1.5" fill="#0d1f18">sawazi</text>
   <text x="127" y="92" font-family="'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif" font-weight="500"
-        font-size="15" letter-spacing="2.5" fill="#5d6a63">BY PESARA</text>
+        font-size="12" letter-spacing="1.6" fill="#5d6a63">A PRODUCT OF PESARA LIMITED</text>
 </svg>

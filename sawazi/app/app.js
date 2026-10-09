@@ -138,7 +138,7 @@ function langButton(after) {
 
 function startScreen(...content) {
   const card = h("div", { class: "card" },
-    h("div", { class: "row" }, h("div", { class: "brand" }, h("img", { src: "logo.svg", alt: "" }), h("b", null, "sawazi")),
+    h("div", { class: "row" }, h("div", { class: "brand" }, h("img", { src: "logo.svg", alt: "" }), h("div", null, h("b", null, "sawazi"), h("div", { class: "by" }, "A product of Pesara Limited"))),
       langButton(() => location.reload())),
     ...content);
   document.getElementById("app").replaceChildren(h("div", { class: "start" }, card));

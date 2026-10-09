@@ -137,7 +137,7 @@ function renderLogin(message) {
     });
   } },
     h("div", { class: "login-brand" }, h("img", { src: "logo.svg", alt: "", width: "44", height: "44" }),
-      h("div", null, h("div", { class: "mark" }, "sawazi"), h("div", { class: "by" }, "BY PESARA"))),
+      h("div", null, h("div", { class: "mark" }, "sawazi"), h("div", { class: "by" }, "A PRODUCT OF PESARA LIMITED"))),
     h("h1", null, "Staff console"),
     message ? note("info", message) : null,
     h("label", null, "Email", email),
@@ -177,7 +177,7 @@ function renderOwnPassword() {
     });
   } },
     h("div", { class: "login-brand" }, h("img", { src: "logo.svg", alt: "", width: "44", height: "44" }),
-      h("div", null, h("div", { class: "mark" }, "sawazi"), h("div", { class: "by" }, "BY PESARA"))),
+      h("div", null, h("div", { class: "mark" }, "sawazi"), h("div", { class: "by" }, "A PRODUCT OF PESARA LIMITED"))),
     h("h1", null, "Choose your own password"),
     note("info", `Welcome, ${state.me.name}. The password you just used was set by someone else, so pick one only you know before you start.`),
     h("label", null, "The password you just used", current),

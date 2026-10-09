@@ -1,6 +1,6 @@
-# Sawazi by Pesara
+# Sawazi, a product of Pesara Limited
 
-Sawazi is a product of Pesara (the house brand). It is an operations layer that sits beside any SACCO or
+Sawazi is a product of Pesara Limited (the company and house brand). User-facing pages say "A product of Pesara Limited". It is an operations layer that sits beside any SACCO or
 microfinance core banking system. It is NOT a core banking system and must never become one.
 It never holds, moves or lends money. Keeping it read/compute-only keeps it out of CBK/SASRA licensing.
 
