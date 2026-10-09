@@ -22,6 +22,8 @@ def normalise_url(url: str) -> str:
     return url
 
 
+if ON_VERCEL and not os.getenv("SAWAZI_DB_URL"):  # never fall back to a throwaway file in production
+    raise RuntimeError("SAWAZI_DB_URL is not set: add Supabase's transaction pooler string in Vercel")
 DB_URL = normalise_url(os.getenv("SAWAZI_DB_URL", "sqlite:///./sawazi.db"))
 ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
 
