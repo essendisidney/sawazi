@@ -44,7 +44,14 @@ def snapshot_figures(s: Session, institution_id: int) -> dict:
             "par_by_product": r.par_by_product[:10], "par_by_employer": r.par_by_employer[:10],
             "guarantors": {k: r.guarantors[k] for k in ("members_guaranteeing", "pledged_cents", "on_loans_behind_cents")},
             "flags": dict(Counter(f.kind for f in r.flags)), "flags_high": sum(f.severity == "high" for f in r.flags),
-            "suspense": {"count": susp[0], "cents": int(susp[1])}}
+            "suspense": {"count": susp[0], "cents": int(susp[1])}, **_groups(s, institution_id)}
+
+
+def _groups(s: Session, institution_id: int) -> dict:
+    from .groups_api import overview
+
+    o = overview(s, institution_id)
+    return {"groups": o} if o else {}  # older snapshots, and SACCOs without groups, have no "groups" entry
 
 
 def take_snapshot(s: Session, institution_id: int, as_of: date | None = None) -> PortfolioSnapshot:
@@ -200,6 +207,10 @@ def _summary(d: dict) -> list[str]:
         if flags.get("guarantor_in_arrears"):
             out.append(f"{flags['guarantor_in_arrears']} guarantor(s) are more than 30 days behind on their own loans; "
                        f"{kes(g['on_loans_behind_cents'])} of guarantees sit on loans that are behind.")
+        grp = cur.figures.get("groups")
+        if grp and grp["groups_behind"]:
+            out.append(f"{grp['groups_behind']} of {grp['groups']} borrowing group(s) have members behind: "
+                       f"{kes(grp['arrears_cents'])} in arrears that their whole group stands behind.")
         circles = flags.get("mutual_guarantee", 0) + flags.get("guarantee_circle", 0)
         if circles:
             out.append(f"{circles} group(s) of members guarantee each other's loans: worth checking they are genuine.")
@@ -383,6 +394,19 @@ def render(inst: Institution, d: dict, generated_by: str) -> str:
                    f'<p class="muted">Each case is listed on the Risk page of the Sawazi console. They are prompts to check, not findings.</p>'
                    if flag_rows else '<p>No warning signs in the guarantor network.</p>'))
 
+    grp = cur.figures.get("groups") if cur else None
+    groups_html = ""
+    if grp:
+        rows = "".join(f'<tr><td>{esc(b["name"])} <span class="muted">{esc(b["group_no"])}</span></td><td class="n">{b["members"]}</td>'
+                       f'<td class="n">{b["members_behind"]}</td><td class="n">{kes(b["arrears_cents"])}</td>'
+                       f'<td class="n">{pct(b["par30_bps"])}</td></tr>' for b in grp["behind"])
+        groups_html = (f'<p>{grp["groups"]} joint-liability groups with {grp["members"]} members have {kes(grp["outstanding_cents"])} '
+                       f'out on {grp["loans"]} loans; PAR 30 across the groups is {pct(grp["par30_bps"])}. When a member falls behind, '
+                       f'the whole group stands behind the amount.</p>'
+                       + (f'<table><tr><th>Group with members behind</th><th class="n">Members</th><th class="n">Behind</th>'
+                          f'<th class="n">Arrears</th><th class="n">PAR 30</th></tr>{rows}</table>'
+                          if rows else '<p>No group has a member behind.</p>'))
+
     gov_rows = "".join(f'<tr><td>{e["at"]:%d %b %H:%M}</td><td>{esc(e["who"])}</td><td>{esc(e["what"])}</td>'
                        f'<td>{esc(e["detail"])}{(" · " + esc(e["note"])) if e["note"] else ""}</td></tr>' for e in d["governance"])
     gov = ((f'<table><tr><th>When</th><th>Who</th><th>What</th><th>Detail</th></tr>{gov_rows}</table>' if gov_rows
@@ -407,5 +431,6 @@ the core banking system remains the book of record.</p>
 <section><h2>2. Collections and payments</h2>{collections}</section>
 <section><h2>3. Lending</h2>{lending}</section>
 <section><h2>4. Guarantor exposure</h2>{guar or '<p class="muted">Shown when a snapshot exists for the month.</p>'}</section>
-<section><h2>5. Governance</h2>{gov}</section>
+{f'<section><h2>5. Group lending</h2>{groups_html}</section>' if groups_html else ''}
+<section><h2>{6 if groups_html else 5}. Governance</h2>{gov}</section>
 </main></body></html>"""

@@ -132,3 +132,27 @@ def test_money_paid_to_the_group_account_is_never_given_to_one_member(mfi):
         assert s.scalar(select(Transaction.status).where(Transaction.reference == "QGRP000001")) == "split"
     assert c.post(f"/exceptions/{eid}/split", headers=acc, json={"note": "again", "lines": [
         {"member_no": "M2", "amount_kes": 1500}, {"member_no": "M3", "amount_kes": 1000}]}).status_code == 404
+
+
+def test_groups_count_in_risk_board_pack_and_collections(mfi):
+    from sawazi.models import Reminder
+
+    c, Session, gid, officer = mfi
+    acc = login(c, "accountant@a.test")
+    r = c.get("/institutions/1/risk", headers=acc).json()["groups"]
+    assert (r["groups"], r["groups_behind"], r["members"]) == (1, 1, 3)
+    assert r["behind"][0]["group_no"] == "UMJ01" and r["behind"][0]["arrears_kes"] == 2000
+
+    assert c.post("/institutions/1/collections/queue", headers=officer).status_code == 200
+    with Session() as s:
+        rem = s.scalar(select(Reminder).where(Reminder.loan_id == 11))  # M2: 40 days behind, in Umoja Women
+        assert rem.channel == "group_meeting"
+        assert "Raise at Umoja Women's Tuesday meeting" in rem.message and "credit_officer a" in rem.message
+        rid = rem.id
+    sent = c.post("/institutions/1/reminders/send", headers=officer, json={"reminder_ids": [rid]}).json()
+    assert sent["results"][0]["result"] == "skipped" and "note for staff" in sent["results"][0]["reason"]  # never texted
+
+    assert c.post("/institutions/1/snapshots", headers=acc, params={"as_of": "2026-09-30"}).status_code == 200
+    html = c.get("/institutions/1/board-pack.html", headers=acc, params={"month": "2026-09"}).text
+    assert "5. Group lending" in html and "6. Governance" in html and "Umoja Women" in html
+    assert "borrowing group(s) have members behind" in html

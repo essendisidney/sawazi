@@ -190,7 +190,7 @@ def test_checks_before_sending(world):
     res = send(c, h, 12, 13, 14, 21, 404)
     assert res[12]["reason"] == "member has opted out of SMS"
     assert res[13]["reason"] == "member has no valid phone number"
-    assert "internal recovery note" in res[14]["reason"]
+    assert "note for staff" in res[14]["reason"]
     assert res[21]["reason"] == "reminder not found"  # SACCO B's reminder
     assert res[404]["reason"] == "reminder not found"
     assert fake.sent == []

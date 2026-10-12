@@ -645,7 +645,7 @@ def audit_log(
 
 # ---------------------------------------------------------------- SMS to members (Taifa Mobile)
 
-SENDABLE_CHANNELS = {"sms", "call", "guarantor_notice", "field_visit"}  # "recovery" text is an internal note
+SENDABLE_CHANNELS = {"sms", "call", "guarantor_notice", "field_visit"}  # "recovery" and "group_meeting" are notes for staff
 MIN_DAYS_BETWEEN_SMS = 3  # per loan: protects members from repeat messages when the queue is rebuilt
 MAX_SEND_BATCH = 100
 DELIVERED_OR_PENDING = ("pending", "sent", "unknown", "simulated", "delivered")
@@ -699,7 +699,7 @@ def _send_one(s: Session, institution_id: int, rid: int, who: Principal, provide
     if r.status not in ("queued", "failed"):
         return {"result": "skipped", "reason": f"already {r.status}"}
     if r.channel not in SENDABLE_CHANNELS:
-        return {"result": "skipped", "reason": "this is an internal recovery note, not a message for the member"}
+        return {"result": "skipped", "reason": "this is a note for staff (recovery or a group meeting), not a message for the member"}
     loan = s.get(Loan, r.loan_id)
     member = s.get(Member, loan.member_id)
     phone = norm_phone(member.phone)
@@ -1865,7 +1865,18 @@ def risk_view(institution_id: int, s: Session = Depends(get_session)):
                         "par_by_product": r.par_by_product, "par_by_employer": r.par_by_employer,
                         "concentration": r.concentration, "guarantors": r.guarantors,
                         "flags": [{"kind": f.kind, "severity": f.severity, "member_nos": f.member_nos,
-                                   "amount_cents": f.amount_cents, "message": f.message} for f in r.flags]})
+                                   "amount_cents": f.amount_cents, "message": f.message} for f in r.flags],
+                        "groups": _group_overview_out(s, institution_id)})
+
+
+def _group_overview_out(s: Session, institution_id: int) -> dict | None:
+    from .groups_api import overview
+
+    o = overview(s, institution_id)
+    if o is None:
+        return None
+    return {**{k: v for k, v in o.items() if k != "behind"}, "par30_pct": o["par30_bps"] / 100,
+            "behind": [{**b, "par30_pct": b["par30_bps"] / 100} for b in o["behind"]]}
 
 
 # ---------------------------------------------------------------- snapshots and the board pack

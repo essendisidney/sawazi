@@ -61,6 +61,27 @@ def summary(s: Session, g: LendingGroup) -> dict:
             "shared_arrears_kes": arrears / 100}
 
 
+def overview(s: Session, institution_id: int) -> dict | None:
+    """Group lending across the institution, in cents and basis points (for snapshots and the board pack).
+    None when the institution has no active groups."""
+    groups = list(s.scalars(select(LendingGroup).where(LendingGroup.institution_id == institution_id,
+                                                       LendingGroup.status == "active")))
+    if not groups:
+        return None
+    rows = []
+    for g in groups:
+        x = summary(s, g)
+        rows.append({"group_no": g.group_no, "name": g.name, "members": x["members"], "loans": x["loans"],
+                     "outstanding_cents": round(x["outstanding_kes"] * 100), "arrears_cents": round(x["arrears_kes"] * 100),
+                     "par30_bps": round(x["par30_pct"] * 100), "members_behind": x["members_behind"]})
+    out = sum(r["outstanding_cents"] for r in rows)
+    at_risk = sum(r["outstanding_cents"] * r["par30_bps"] // 10_000 for r in rows)
+    behind = sorted((r for r in rows if r["arrears_cents"] > 0), key=lambda r: -r["arrears_cents"])
+    return {"groups": len(rows), "members": sum(r["members"] for r in rows), "loans": sum(r["loans"] for r in rows),
+            "outstanding_cents": out, "arrears_cents": sum(r["arrears_cents"] for r in rows),
+            "par30_bps": round(10_000 * at_risk / out) if out else 0, "groups_behind": len(behind), "behind": behind[:10]}
+
+
 def _group_out(s: Session, g: LendingGroup) -> dict:
     officer = s.get(StaffUser, g.officer_user_id) if g.officer_user_id else None
     return {"id": g.id, "group_no": g.group_no, "name": g.name, "status": g.status, "frequency": g.frequency,
