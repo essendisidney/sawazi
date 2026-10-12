@@ -1,0 +1,58 @@
+# Every push and pull request runs the whole suite twice: on SQLite, and on PostgreSQL 17 (the version Supabase
+# runs in production), which checks foreign keys, column lengths and concurrency that SQLite does not.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sqlite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4  # syntax checks of the console and member app scripts
+        with:
+          node-version: "22"
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest -q
+
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: sawazi
+          POSTGRES_PASSWORD: ci-only-throwaway
+          POSTGRES_DB: sawazi_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sawazi" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      SAWAZI_TEST_DB_URL: postgresql+psycopg://sawazi:ci-only-throwaway@localhost:5432/sawazi_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest -q -p no:cacheprovider

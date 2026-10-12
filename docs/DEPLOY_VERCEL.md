@@ -55,10 +55,19 @@ Then remove `SAWAZI_API_KEY` from Vercel and redeploy.
   members fits; a very large one must be split by date range.
 - **Time:** a request may run 60 seconds (`vercel.json`). Matching a month for a few thousand members takes a few
   seconds.
-- **Backups:** Supabase Pro keeps daily backups for 7 days (Database > Backups). For longer, add point-in-time
-  recovery, or download a `pg_dump` each month and keep it off Supabase.
+- **Backups:** Supabase Pro keeps daily backups for 7 days (Database > Backups). Once a month, also keep a copy
+  outside Supabase: `python scripts/backup_offsite.py D:/sawazi-backups` (needs Docker; asks for the Session pooler
+  address without showing it; checks the copy reads back; keeps the newest 12). Keep that folder encrypted and out
+  of GitHub, which is public.
 - **SMS while simulated:** sign-in codes are written to the function log (Vercel > Logs). Keep the member app quiet
   until real SMS is on.
+
+## Uptime and tests
+
+- `.github/workflows/uptime.yml` checks `/healthz` every 15 minutes; a failed run emails whoever last changed the
+  file. GitHub pauses scheduled checks after 60 days with no commits; re-enable it under Actions if so.
+- `.github/workflows/tests.yml` runs the whole suite on SQLite and on PostgreSQL 17 for every pull request and every
+  push to `main`. Merge only when both are green.
 
 ## Checking the lockdown
 
