@@ -20,7 +20,7 @@ from datetime import datetime
 
 import httpx
 
-from .importers.common import norm_phone, to_cents
+from .importers.common import BadValue, norm_phone, to_cents
 
 BASE_URLS = {"sandbox": "https://sandbox.safaricom.co.ke", "production": "https://api.safaricom.co.ke"}
 
@@ -53,7 +53,10 @@ def parse(body: dict) -> C2BPayment:
     shortcode = str(body.get("BusinessShortCode") or "").strip()
     if not trans_id or not shortcode:
         raise BadCallback("missing TransID or BusinessShortCode")
-    amount = to_cents(str(body.get("TransAmount") or ""))
+    try:
+        amount = to_cents(str(body.get("TransAmount") or ""))
+    except BadValue:
+        amount = 0
     if amount <= 0:
         raise BadCallback(f"bad amount {body.get('TransAmount')!r}")
     try:

@@ -10,6 +10,7 @@ Matched lines become transactions and flow through normal allocation.
 """
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
 from datetime import datetime
 
@@ -126,30 +127,40 @@ def reconcile_checkoff(s: Session, institution_id: int, employer: str, period: s
 
     # Turn identified remittances into transactions so allocation is uniform.
     when = datetime.strptime(period + "-28", "%Y-%m-%d")
-    existing = set(
-        s.scalars(
-            select(Transaction.reference).where(
-                Transaction.institution_id == institution_id, Transaction.source == "checkoff"
-            )
-        )
-    )
+    posted: dict[str, int] = defaultdict(int)  # reference -> amount already turned into a payment
+    for ref, amount in s.execute(select(Transaction.reference, Transaction.amount_cents).where(
+            Transaction.institution_id == institution_id, Transaction.source == "checkoff")):
+        posted[ref] += amount
+    emp = hashlib.sha1(norm_ref(employer).encode()).hexdigest()[:10]  # the full name: no two employers collide
     created = 0
     for mid, got in remitted.items():
-        ref = f"CO-{norm_ref(employer)[:12]}-{period}-{members[mid].member_no}"
-        if ref in existing or got <= 0:
+        member_no = members[mid].member_no
+        base = f"CO-{emp}-{period}-{member_no}"
+        legacy = f"CO-{norm_ref(employer)[:12]}-{period}-{member_no}"  # references written before this change
+        mine = [r for r in posted if r == base or r.startswith(base + "-") or r == legacy]
+        already = sum(posted[r] for r in mine)
+        extra = got - already
+        if extra < 0:  # a corrected file lowered a remittance that was already posted: a person must look
+            exc("checkoff_reduced", "high", mid, -extra,
+                f"The corrected file shows KES {got / 100:,.0f} for {member_no} {members[mid].name}, but KES "
+                f"{already / 100:,.0f} was already posted from an earlier file. Reverse the difference in the core system.")
             continue
+        if extra == 0:
+            continue
+        ref = base if not mine else f"{base}-{len(mine) + 1}"  # a top-up from a corrected file is its own payment
         s.add(
             Transaction(
                 institution_id=institution_id,
                 source="checkoff",
                 reference=ref,
                 txn_time=when,
-                amount_cents=got,
-                payer_name=employer,
-                account_ref=members[mid].member_no,
-                narrative=f"Check-off {employer} {period}",
+                amount_cents=extra,
+                payer_name=employer[:200],
+                account_ref=member_no,
+                narrative=f"Check-off {employer} {period}" + (" (correction)" if mine else ""),
             )
         )
+        posted[ref] += extra
         created += 1
     s.commit()
 

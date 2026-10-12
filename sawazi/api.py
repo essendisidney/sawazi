@@ -36,7 +36,7 @@ from .engine.collections import build_queue, portfolio_at_risk
 from .engine import allocation, appraisal, exposure
 from .engine.matching import allocate, run_matching
 from .importers import sources
-from .importers.common import norm_phone
+from .importers.common import BadFile, BadValue, norm_phone
 from .models import (Allocation, AllocationRules, ApiKey, CoreGuarantee, Guarantee, PortfolioSnapshot, LoanApplication, LoanDecision, LoanProduct, AuditEvent, ExceptionItem, Institution, Loan, Member, MpesaCallback,
                      Reminder, SmsMessage, SmsOptOut, SmsSettings, StaffSession, StaffUser, Transaction)
 
@@ -323,6 +323,23 @@ def _audited(s: Session, who: Principal, action: str, result: dict, note: str | 
     return result
 
 
+MAX_UPLOAD_BYTES = 20 * 1_048_576
+
+
+@app.exception_handler(BadFile)
+async def unsafe_file(request: Request, exc: BadFile):
+    """A file that cannot be imported safely: nothing from it was saved (the transaction was rolled back)."""
+    return JSONResponse({"detail": f"Nothing was imported: {exc}"}, status_code=422)
+
+
+@app.exception_handler(BadValue)
+async def unreadable_value(request: Request, exc: BadValue):
+    """Last line of defence: an amount reached the money code unchecked. Refuse rather than read it as zero."""
+    logging.getLogger("sawazi").error("unchecked unreadable value ref=%s %s: %s", getattr(request.state, "ref", "-"),
+                                      request.url.path, exc)
+    return JSONResponse({"detail": f"Nothing was imported: {exc}."}, status_code=422)
+
+
 @app.post("/institutions/{institution_id}/import/{kind}")
 async def import_file(
     institution_id: int,
@@ -338,7 +355,10 @@ async def import_file(
     _inst(s, institution_id)
     if as_of and as_of > auth.utcnow().date():  # checked before anything is imported
         raise HTTPException(422, "as_of cannot be in the future")
-    content = await file.read()
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"The file is larger than {MAX_UPLOAD_BYTES // 1_048_576} MB. Split it by date range "
+                                 "and upload the parts.")
     note = f"file {file.filename}"
     if kind == "core_guarantees":
         result = sources.import_core_guarantees(s, institution_id, content, replace=replace).as_dict()
@@ -371,8 +391,7 @@ def checkoff(institution_id: int, employer: str, period: str, s: Session = Depen
 def match(institution_id: int, s: Session = Depends(get_session), who: Principal = Depends(require("reconcile"))):
     _inst(s, institution_id)
     with matching_lock(s, institution_id):
-        result = run_matching(s, institution_id)
-    result["guarantees_released"] = guarantors.release_repaid(s, institution_id)
+        result = run_matching(s, institution_id)  # also releases guarantees on loans now repaid
     return _audited(s, who, "match.run", result)
 
 
@@ -967,9 +986,7 @@ def c2b_confirmation(token: str, body: dict, request: Request, s: Session = Depe
     s.commit()
     try:
         with matching_lock(s, inst.id):
-            run_matching(s, inst.id)
-            guarantors.release_repaid(s, inst.id)
-            s.commit()
+            run_matching(s, inst.id)  # allocates and releases guarantees on loans now repaid, then commits
     except Exception:  # the payment is stored; the next match run picks it up
         s.rollback()
         log.exception("C2B real-time matching failed for institution %s", inst.id)

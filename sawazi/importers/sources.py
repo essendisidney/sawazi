@@ -18,6 +18,10 @@ from ..models import (CheckoffRemittance, CheckoffSchedule, CoreGuarantee, Excep
                       Member,
                       MpesaCallback, Transaction)
 from .common import (
+    BadFile,
+    BadValue,
+    amount_problem,
+    has_column,
     norm_phone,
     pick,
     read_rows,
@@ -67,6 +71,13 @@ def import_members(s: Session, institution_id: int, content) -> ImportResult:
         name = pick(row, "name", "member_name", "full_name", "names")
         if not member_no or not name:
             res.rejected.append(f"row {i}: missing member number or name")
+            continue
+        too_long = _too_long(row, member_no=(member_no, 40), name=(name, 200),
+                             id_number=(pick(row, "id_number", "id_no", "national_id"), 20),
+                             employer=(pick(row, "employer", "employer_name", "station"), 200))
+        figures = [amount_problem(row, *names) for names in _FIGURES.values()]
+        if too_long or any(figures):
+            res.rejected.append(f"row {i}: {member_no} {too_long or next(f for f in figures if f)}")
             continue
         m = existing.get(member_no)
         if m is None:
@@ -130,6 +141,14 @@ def _apply_member_figures(m: Member, row: dict, i: int, res: ImportResult) -> bo
     if set_pay:
         m.pay_as_of = to_date(pick(row, *_PAY_AS_OF)) or as_of
     return touched
+
+
+def _too_long(row: dict, **fields: tuple[str, int]) -> str | None:
+    """A value longer than its column holds is refused with a reason (PostgreSQL would otherwise fail the upload)."""
+    for label, (value, limit) in fields.items():
+        if value and len(value) > limit:
+            return f"{label.replace('_', ' ')} is longer than {limit} characters"
+    return None
 
 
 def _link_disbursed(s: Session, institution_id: int, new_loans: list[Loan]) -> None:
@@ -212,10 +231,18 @@ def import_member_balances(s: Session, institution_id: int, content) -> ImportRe
         if m is None:
             res.rejected.append(f"row {i}: unknown member '{member_no}'")
             continue
+        bad = next((p for p in (amount_problem(row, *names) for names in _FIGURES.values()) if p), None)
+        if bad:
+            res.rejected.append(f"row {i}: {member_no} {bad}")
+            continue
         if _apply_member_figures(m, row, i, res):
             res.updated += 1
     s.commit()
     return res
+
+
+_LOAN_BALANCE = ("balance", "outstanding", "loan_balance", "outstanding_balance", "balance_outstanding", "balance_kes", "loan_balance_kes", "total_balance")
+_LOAN_ARREARS = ("arrears", "arrears_amount", "amount_in_arrears", "arrears_kes", "total_arrears")
 
 
 def import_loans(s: Session, institution_id: int, content) -> ImportResult:
@@ -229,11 +256,31 @@ def import_loans(s: Session, institution_id: int, content) -> ImportResult:
         for ln in s.scalars(select(Loan).where(Loan.institution_id == institution_id))
     }
     new_loans: list[Loan] = []
-    for i, row in enumerate(read_rows(content), start=2):
+    rows = read_rows(content)
+    if rows and not has_column(rows, *_LOAN_BALANCE):
+        raise BadFile("the loans file has no balance column (expected 'Balance' or 'Outstanding Balance'). Without it "
+                      "every loan would look repaid, so nothing was imported.")
+    if rows and not has_column(rows, *_LOAN_ARREARS):
+        raise BadFile("the loans file has no arrears column (expected 'Arrears'). Without it no loan would look "
+                      "overdue, so nothing was imported.")
+    for i, row in enumerate(rows, start=2):
         loan_no = pick(row, "loan_no", "loan_number", "loan_id", "account_no")
         member_no = pick(row, "member_no", "member_number", "memberno")
         if not loan_no or member_no not in members:
             res.rejected.append(f"row {i}: missing loan number or unknown member '{member_no}'")
+            continue
+        balance_raw = pick(row, *_LOAN_BALANCE)
+        problem = ("blank balance" if not balance_raw else
+                   amount_problem(row, *_LOAN_BALANCE) or amount_problem(row, *_LOAN_ARREARS)
+                   or amount_problem(row, "installment", "instalment", "monthly_repayment", "repayment")
+                   or amount_problem(row, "principal", "amount", "loan_amount")
+                   or amount_problem(row, "penalty_arrears", "penalty_in_arrears", "penalties_due", "penalty")
+                   or amount_problem(row, "interest_arrears", "interest_in_arrears", "interest_due"))
+        days_raw = pick(row, "days_in_arrears", "days_arrears", "dpd").replace(",", "")
+        if not problem and days_raw and not re.fullmatch(r"\d+(\.0+)?", days_raw):
+            problem = f"days in arrears '{days_raw}' is not a whole number"
+        if problem:  # the loan keeps its last known figures; it is never closed on a figure we could not read
+            res.rejected.append(f"row {i}: {loan_no} {problem}; loan left as it was")
             continue
         ln = existing.get(loan_no)
         if ln is None:
@@ -253,9 +300,9 @@ def import_loans(s: Session, institution_id: int, content) -> ImportResult:
             res.skipped_duplicates += 1
         ln.product = pick(row, "product", "loan_product", "loan_type") or ln.product or "Normal loan"
         ln.principal_cents = to_cents(pick(row, "principal", "amount", "loan_amount")) or ln.principal_cents
-        ln.balance_cents = to_cents(pick(row, "balance", "outstanding", "loan_balance"))
+        ln.balance_cents = to_cents(balance_raw)
         ln.installment_cents = to_cents(pick(row, "installment", "instalment", "monthly_repayment", "repayment"))
-        ln.arrears_cents = to_cents(pick(row, "arrears", "arrears_amount", "amount_in_arrears"))
+        ln.arrears_cents = to_cents(pick(row, *_LOAN_ARREARS))
         penalty_cols = ("penalty_arrears", "penalty_in_arrears", "penalties_due", "penalty")
         interest_cols = ("interest_arrears", "interest_in_arrears", "interest_due")
         known = any(c in row for c in penalty_cols + interest_cols)  # the export carries a breakdown
@@ -267,12 +314,16 @@ def import_loans(s: Session, institution_id: int, content) -> ImportResult:
             known, penalty, interest = False, 0, 0
         ln.penalty_arrears_cents, ln.interest_arrears_cents = penalty, interest
         ln.arrears_breakdown = known
-        ln.days_in_arrears = int(float(pick(row, "days_in_arrears", "days_arrears", "dpd") or 0))
+        ln.days_in_arrears = int(float(days_raw or 0))
         ln.disbursed_on = to_date(pick(row, "disbursed_on", "disbursement_date", "date_disbursed"))
         ln.next_due_on = to_date(pick(row, "next_due_on", "next_due_date", "due_date"))
         via = pick(row, "repays_via", "repayment_mode", "mode").lower()
         ln.repays_via = "checkoff" if "check" in via else ("bank" if "bank" in via else "mpesa")
-        ln.status = "closed" if ln.balance_cents <= 0 else "active"
+        core_status = pick(row, "status", "loan_status").lower()
+        if "write" in core_status or "written" in core_status:  # written off: guarantors stay liable
+            ln.status = "written_off"
+        else:
+            ln.status = "closed" if ln.balance_cents <= 0 else "active"
     s.flush()
     _link_disbursed(s, institution_id, new_loans)
     s.commit()
@@ -305,6 +356,13 @@ def import_mpesa_statement(s: Session, institution_id: int, content) -> ImportRe
     pending_callbacks = _unconfirmed_callbacks(s, institution_id)
     for i, row in enumerate(read_rows(content), start=2):
         receipt = pick(row, "receipt_no", "receipt", "transaction_id", "trans_id")
+        problem = amount_problem(row, "paid_in", "amount", "credit")
+        if problem:
+            res.rejected.append(f"row {i}: {receipt or 'no receipt'} {problem}")
+            continue
+        if len(receipt) > 80:
+            res.rejected.append(f"row {i}: receipt number longer than 80 characters")
+            continue
         paid_in = to_cents(pick(row, "paid_in", "amount", "credit"))
         status = pick(row, "transaction_status", "status").lower()
         if not receipt or paid_in <= 0:
@@ -328,23 +386,38 @@ def import_mpesa_statement(s: Session, institution_id: int, content) -> ImportRe
         if when is None:
             res.rejected.append(f"row {i}: unreadable date for {receipt}")
             continue
-        s.add(
-            Transaction(
-                institution_id=institution_id,
-                source="mpesa",
-                reference=receipt,
-                txn_time=when,
-                amount_cents=paid_in,
-                payer_name=name or None,
-                payer_phone=phone,
-                account_ref=pick(row, "a_c_no", "ac_no", "account_no", "account", "bill_ref_number", "billrefnumber"),
-                narrative=pick(row, "details"),
-            )
+        txn = Transaction(
+            institution_id=institution_id,
+            source="mpesa",
+            reference=receipt,
+            txn_time=when,
+            amount_cents=paid_in,
+            payer_name=(name or "")[:200] or None,
+            payer_phone=phone,
+            account_ref=pick(row, "a_c_no", "ac_no", "account_no", "account", "bill_ref_number", "billrefnumber")[:80],
+            narrative=pick(row, "details"),
         )
+        if not _insert_once(s, txn):  # a live callback saved the same receipt a moment ago
+            res.skipped_duplicates += 1
+            continue
         seen.add(receipt)
         res.created += 1
     s.commit()
     return res
+
+
+def _insert_once(s: Session, txn: Transaction) -> bool:
+    """Add a payment unless an identical reference was saved meanwhile (e.g. by a live M-Pesa callback):
+    the rest of the file still imports instead of the whole upload failing."""
+    from sqlalchemy.exc import IntegrityError
+
+    try:
+        with s.begin_nested():
+            s.add(txn)
+            s.flush()
+        return True
+    except IntegrityError:
+        return False
 
 
 def _unconfirmed_callbacks(s: Session, institution_id: int) -> dict[str, list[MpesaCallback]]:
@@ -384,7 +457,12 @@ def import_bank_statement(s: Session, institution_id: int, content) -> ImportRes
     """Generic bank statement CSV: Date, Narrative/Description, Reference, Credit."""
     res = ImportResult()
     seen = _existing_refs(s, institution_id, "bank")
+    occurrence: dict[str, int] = {}  # identical lines in one statement are separate payments
     for i, row in enumerate(read_rows(content), start=2):
+        problem = amount_problem(row, "credit", "credit_amount", "deposits", "money_in", "paid_in")
+        if problem:
+            res.rejected.append(f"row {i}: {problem}")
+            continue
         credit = to_cents(pick(row, "credit", "credit_amount", "deposits", "money_in", "paid_in"))
         if credit <= 0:
             continue
@@ -393,23 +471,30 @@ def import_bank_statement(s: Session, institution_id: int, content) -> ImportRes
             res.rejected.append(f"row {i}: unreadable date")
             continue
         narrative = pick(row, "narrative", "description", "details", "particulars")
-        ref = pick(row, "reference", "ref", "cheque_no", "transaction_ref")
-        if not ref:  # banks don't always give one: build a stable fingerprint
-            ref = "H" + hashlib.sha1(f"{when.isoformat()}|{credit}|{narrative}".encode()).hexdigest()[:16]
+        given = pick(row, "reference", "ref", "cheque_no", "transaction_ref")
+        # Banks don't always give a reference, and some reuse one (batch or cheque numbers). The fingerprint
+        # covers the whole line plus how many identical lines came before it in this statement, so two equal
+        # cash deposits on one day are two payments, and re-uploading the statement still adds nothing.
+        key = f"{given}|{when.isoformat()}|{credit}|{narrative}"
+        occurrence[key] = occurrence.get(key, 0) + 1
+        ref = "H" + hashlib.sha1(f"{key}|{occurrence[key]}".encode()).hexdigest()[:16]
+        if given and occurrence[key] == 1 and given in seen:  # a statement uploaded before this change
+            ref = given
         if ref in seen:
             res.skipped_duplicates += 1
             continue
-        s.add(
-            Transaction(
-                institution_id=institution_id,
-                source="bank",
-                reference=ref,
-                txn_time=when,
-                amount_cents=credit,
-                narrative=narrative,
-                account_ref=pick(row, "account_ref", "member_no"),
-            )
+        txn = Transaction(
+            institution_id=institution_id,
+            source="bank",
+            reference=ref,
+            txn_time=when,
+            amount_cents=credit,
+            narrative=narrative,
+            account_ref=pick(row, "account_ref", "member_no")[:80],
         )
+        if not _insert_once(s, txn):
+            res.skipped_duplicates += 1
+            continue
         seen.add(ref)
         res.created += 1
     s.commit()
@@ -440,6 +525,10 @@ def import_checkoff_schedule(s: Session, institution_id: int, employer: str, per
         if member_no not in members:
             res.rejected.append(f"row {i}: unknown member '{member_no}'")
             continue
+        problem = amount_problem(row, "expected", "amount", "deduction", "total")
+        if problem:
+            res.rejected.append(f"row {i}: {problem}")
+            continue
         amount = to_cents(pick(row, "expected", "amount", "deduction", "total"))
         mid = members[member_no]
         if mid in existing:
@@ -463,6 +552,10 @@ def import_checkoff_remittance(s: Session, institution_id: int, employer: str, p
         institution_id=institution_id, employer=employer, period=period
     ).delete()
     for i, row in enumerate(read_rows(content), start=2):
+        problem = amount_problem(row, "amount", "remitted", "deduction", "total")
+        if problem:
+            res.rejected.append(f"row {i}: {problem}")
+            continue
         amount = to_cents(pick(row, "amount", "remitted", "deduction", "total"))
         member_no = pick(row, "member_no", "member_number", "memberno", "sacco_no")
         name = pick(row, "name", "payroll_name", "employee_name")

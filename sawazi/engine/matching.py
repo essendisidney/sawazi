@@ -67,15 +67,20 @@ class MemberIndex:
         return int(fuzz.token_set_ratio(self.names.get(member_id, ""), norm_name(name)))
 
 
+_DATES = re.compile(r"\b\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}\b")
+
+
 def find_member(idx: MemberIndex, t: Transaction) -> tuple[Candidate | None, str]:
     """Return the best candidate and a human-readable reason."""
     ref = norm_ref(t.account_ref)
     phone_hits = idx.by_phone.get(t.payer_phone or "", [])
 
-    # Bank narratives often carry the member or loan number inside free text.
-    tokens = [ref] if ref else []
+    # Bank narratives often carry the member or loan number inside free text. Dates are taken out first, so
+    # "13/03/2026" can never be read as member 2026.
+    narrative_tokens = []
     if t.narrative:
-        tokens += [norm_ref(x) for x in re.findall(r"[A-Za-z]{0,4}[-/ ]?\d{3,}", t.narrative)]
+        text = _DATES.sub(" ", t.narrative)
+        narrative_tokens = [norm_ref(x) for x in re.findall(r"[A-Za-z]{0,4}[-/ ]?\d{3,}", text)]
 
     def conflict(mid: int) -> tuple[int, str] | None:
         """A valid reference can still be a typo of the payer's own number.
@@ -93,10 +98,7 @@ def find_member(idx: MemberIndex, t: Transaction) -> tuple[Candidate | None, str
                 )
         return None
 
-    for tok in tokens:
-        if not tok:
-            continue
-        hit = None
+    def lookup(tok: str):
         if tok in idx.by_no:
             hit = Candidate(idx.by_no[tok], 100, "member_no"), "account reference is the member number"
         elif tok in idx.loan_by_no:
@@ -104,11 +106,39 @@ def find_member(idx: MemberIndex, t: Transaction) -> tuple[Candidate | None, str
             hit = Candidate(ln.member_id, 98, "loan_no", ln.id), "account reference is a loan number"
         elif tok in idx.by_idno:
             hit = Candidate(idx.by_idno[tok], 95, "id_number"), "account reference is the member's ID number"
+        else:
+            hit = None
+        return hit
+
+    if ref:
+        hit = lookup(ref)
         if hit:
             clash = conflict(hit[0].member_id)
             if clash:
                 return Candidate(clash[0], 70, "ref_conflict"), clash[1]
             return hit
+
+    # A number in the narrative is a clue, not proof: a cheque, branch or batch number can equal a member number.
+    # It is trusted only if it carries letters (a member or loan number with its prefix) or the payer's name or
+    # phone confirms it, and never when the narrative points at more than one member.
+    found = {}
+    for tok in narrative_tokens:
+        hit = tok and lookup(tok)
+        if hit:
+            found.setdefault(hit[0].member_id, (tok, hit))
+    if len(found) > 1:
+        first = next(iter(found.values()))[1][0]
+        names = ", ".join(idx.by_id[m].member_no for m in found)
+        return Candidate(first.member_id, 60, "narrative_ambiguous"), f"the narrative mentions more than one member ({names})"
+    if found:
+        tok, (cand, reason) = next(iter(found.values()))
+        mid = cand.member_id
+        confirmed = (not tok.isdigit()) or mid in phone_hits or idx.name_score(mid, t.payer_name or t.narrative) >= 85
+        if confirmed:
+            return cand, reason.replace("account reference", "the narrative")
+        return Candidate(mid, 80, "narrative_number"), (
+            f"the narrative contains {tok}, which is {idx.by_id[mid].member_no} {idx.by_id[mid].name}, "
+            "but no name or phone confirms it")
 
     # Typo in the member number (one character off). Only trust it with corroboration.
     if ref and len(ref) >= 4:
@@ -186,6 +216,10 @@ def run_matching(s: Session, institution_id: int) -> dict:
             summary["suspense_cents"] += t.amount_cents
     s.flush()
     summary["anomalies"] = flag_anomalies(s, institution_id, pending, idx)
+    # Loans these payments finished free their guarantors, in the same transaction, so still under the caller's
+    # matching lock (on PostgreSQL the lock ends at this commit).
+    from ..guarantors import release_repaid
+    summary["guarantees_released"] = release_repaid(s, institution_id)
     s.commit()
     total = summary["allocated"] + summary["suspense"]
     summary["processed"] = total
