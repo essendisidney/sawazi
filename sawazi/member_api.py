@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
+import os
 import secrets
 from dataclasses import dataclass
 from datetime import timedelta
@@ -32,6 +34,9 @@ router = APIRouter(tags=["member app"])
 
 TOKEN_PREFIX = "mbr_"
 OTP_MINUTES, OTP_ATTEMPTS, OTP_PER_HOUR = 10, 5, 3
+# Sign-in codes sent across all members per day. Each phone is already limited; this stops a bot cycling through
+# members' numbers from running up the SMS bill. Raise it with SAWAZI_OTP_DAILY_CAP as membership grows.
+OTP_DAILY_CAP = int(os.getenv("SAWAZI_OTP_DAILY_CAP", "500"))
 VERIFY_MINUTES = 10
 SESSION_MINUTES = 30
 PIN_ATTEMPTS, PIN_LOCK_MINUTES = 5, 15
@@ -175,7 +180,11 @@ def send_otp(body: OtpIn, s: Session = Depends(get_session), provider=Depends(sm
     members = _memberships(s, phone)
     recent = s.scalar(select(func.count()).select_from(MemberOtp).where(
         MemberOtp.phone == phone, MemberOtp.created_at > utcnow() - timedelta(hours=1)))
-    if members and recent < OTP_PER_HOUR:
+    today = s.scalar(select(func.count()).select_from(MemberOtp).where(
+        MemberOtp.created_at > utcnow() - timedelta(hours=24)))
+    if members and recent < OTP_PER_HOUR and today >= OTP_DAILY_CAP:
+        logging.getLogger("sawazi").warning("member sign-in SMS stopped: %s codes in 24 h (cap %s)", today, OTP_DAILY_CAP)
+    elif members and recent < OTP_PER_HOUR:
         code = f"{secrets.randbelow(10 ** 6):06d}"
         now = utcnow()
         s.add(MemberOtp(phone=phone, code_hash=_hash(f"{phone}:{code}"), created_at=now,

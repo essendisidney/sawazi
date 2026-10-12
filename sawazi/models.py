@@ -208,6 +208,9 @@ class StaffUser(Base):
     # Set when someone else chose the password (new account, admin reset): the person must pick their own
     # before doing anything else, so nobody else ever knows a working password.
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # Wrong passwords in a row; at LOGIN_ATTEMPTS the account is locked until locked_until (auth.authenticate).
+    failed_logins: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
 

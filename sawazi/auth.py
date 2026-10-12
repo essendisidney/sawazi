@@ -41,6 +41,7 @@ def client_ip(request) -> str | None:
 ROLES = ("admin", "accountant", "credit_officer", "approver", "viewer")
 SESSION_HOURS = 12
 MIN_PASSWORD_LEN = 10
+LOGIN_ATTEMPTS, LOGIN_LOCK_MINUTES = 5, 15  # wrong passwords in a row, then the account waits
 
 # Which roles may do what. Keep this the single source of truth.
 PERMISSIONS: dict[str, set[str]] = {
@@ -111,11 +112,27 @@ def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+class AccountLocked(Exception):
+    def __init__(self, minutes: int):
+        self.minutes = minutes
+
+
 def authenticate(s: Session, email: str, password: str) -> StaffUser | None:
-    user = s.scalar(select(StaffUser).where(StaffUser.email == email.strip().lower()))
+    """The user, or None for a wrong email or password. Five wrong passwords in a row lock the account for
+    15 minutes (AccountLocked), so a password cannot be guessed online; an admin resetting it unlocks it."""
+    user = s.scalar(select(StaffUser).where(StaffUser.email == email.strip().lower()).with_for_update())
+    now = utcnow()
+    if user and user.locked_until and user.locked_until > now:
+        verify_password(password, _DUMMY_HASH)  # same work either way: no timing hint
+        raise AccountLocked(max(1, int((user.locked_until - now).total_seconds() // 60) + 1))
     ok = verify_password(password, user.password_hash if user else _DUMMY_HASH)
+    if user and not ok:
+        user.failed_logins = (user.failed_logins or 0) + 1
+        if user.failed_logins >= LOGIN_ATTEMPTS:
+            user.failed_logins, user.locked_until = 0, now + timedelta(minutes=LOGIN_LOCK_MINUTES)
     if not user or not ok or not user.is_active:
         return None
+    user.failed_logins, user.locked_until = 0, None
     return user
 
 

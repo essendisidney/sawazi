@@ -21,11 +21,11 @@ from decimal import Decimal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, text, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from . import audit, auth, boardpack, daraja, guarantors, returns, risk, sms, ussd
@@ -156,7 +156,15 @@ def create_first_admin(institution_id: int, body: StaffIn, s: Session = Depends(
 @app.post("/auth/login", tags=["auth"])
 def login(body: LoginIn, request: Request, s: Session = Depends(get_session)):
     ip = auth.client_ip(request)
-    user = auth.authenticate(s, body.email, body.password)
+    try:
+        user = auth.authenticate(s, body.email, body.password)
+    except auth.AccountLocked as locked:
+        known = s.scalar(select(StaffUser).where(StaffUser.email == body.email.strip().lower()))
+        audit.record(s, audit.anonymous(known.institution_id), "auth.login_failed", "staff_user", known.id, ip=ip,
+                     note="account locked after repeated wrong passwords")
+        s.commit()
+        raise HTTPException(423, f"Too many wrong passwords for this account. Try again in {locked.minutes} minutes, "
+                                 "or ask your Sawazi admin to reset your password.") from None
     if not user:
         known = s.scalar(select(StaffUser).where(StaffUser.email == body.email.strip().lower()))
         if known:  # unknown emails have no institution to log against
@@ -233,6 +241,7 @@ def update_user(institution_id: int, user_id: int, body: StaffPatch, s: Session 
         auth.check_password_policy(body.password)
         u.password_hash = auth.hash_password(body.password)
         u.must_change_password = True  # the admin knows it; the person picks their own at next login
+        u.failed_logins, u.locked_until = 0, None
     if body.is_active is not None:
         u.is_active = body.is_active
     if body.is_active is False or body.password is not None or body.role is not None:
@@ -1899,7 +1908,9 @@ APP_CSP = CONSOLE_CSP + "; manifest-src 'self'; worker-src 'self'"
 
 @app.middleware("http")
 async def console_security_headers(request: Request, call_next):
+    request.state.ref = secrets.token_hex(4)  # quoted in error messages and the log
     response = await call_next(request)
+    response.headers["X-Sawazi-Ref"] = request.state.ref
     if request.url.path.startswith("/g/"):
         response.headers["Content-Security-Policy"] = guarantors.PAGE_CSP
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -1925,6 +1936,26 @@ async def console_security_headers(request: Request, call_next):
 
 
 _schema_checked = False
+
+
+@app.exception_handler(OperationalError)
+async def database_busy(request: Request, exc: OperationalError):
+    """A time limit hit (lock or statement) or the database briefly unreachable: say so plainly, nothing is half-done
+    because the transaction was rolled back."""
+    ref = getattr(request.state, "ref", "-")
+    logging.getLogger("sawazi").error("database error ref=%s %s %s: %s", ref, request.method, request.url.path,
+                                      str(exc.orig).splitlines()[0] if exc.orig else exc)
+    return JSONResponse({"detail": f"The system is busy. Nothing was changed; please try again in a minute. (Reference {ref})"},
+                        status_code=503, headers={"Retry-After": "30"})
+
+
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception):
+    """Anything unforeseen: the full error goes to the log under a short reference the user can quote."""
+    ref = getattr(request.state, "ref", "-")
+    logging.getLogger("sawazi").exception("unhandled error ref=%s %s %s", ref, request.method, request.url.path)
+    return JSONResponse({"detail": f"Something went wrong on our side. Please quote reference {ref} to Pesara support."},
+                        status_code=500)
 
 
 @app.exception_handler(HTTPException)
