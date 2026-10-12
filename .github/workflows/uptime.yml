@@ -1,0 +1,26 @@
+# Uptime check for the live site. Runs every 15 minutes on GitHub's servers (free for public repositories).
+# A failed run means the site or its database is down; GitHub emails whoever last changed this file.
+# GitHub pauses scheduled workflows after 60 days without any commit: re-enable it under Actions if that happens.
+name: uptime
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  healthz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Live site answers ok
+        run: |
+          for attempt in 1 2 3; do
+            body=$(curl -sS --max-time 20 https://sawazi-one.vercel.app/healthz || true)
+            if [ "$body" = "ok" ]; then echo "ok"; exit 0; fi
+            echo "attempt $attempt: ${body:-no answer}"; sleep 20
+          done
+          echo "::error::Sawazi health check failed three times: ${body:-no answer}"
+          exit 1
