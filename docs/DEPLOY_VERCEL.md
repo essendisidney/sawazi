@@ -25,7 +25,9 @@ Settle that in the registration and agreement first.
   `postgresql://postgres.<ref>:<password>@aws-0-eu-west-1.pooler.supabase.com:6543/postgres`
 - `SAWAZI_PUBLIC_URL`: the address members and staff use, e.g. `https://sawazi.vercel.app` or your own domain
 - `SAWAZI_API_KEY`: only while setting up an institution (see below); remove it afterwards
-- The SMS, Daraja and USSD settings from `deploy/.env.example`, when each is ready (pilot checklist 4 to 6)
+- The SMS, Daraja and USSD settings from `deploy/.env.example`, when each is ready (pilot checklist 4 to 6). Each
+  provider's callbacks are refused until its addresses are in `SAWAZI_SMS_ALLOWED_IPS`, `SAWAZI_DARAJA_ALLOWED_IPS` or
+  `SAWAZI_USSD_ALLOWED_IPS`: the secret in the URL alone is not enough
 
 Never give Preview deployments the production `SAWAZI_DB_URL`: a preview runs unreviewed branches.
 

@@ -7,7 +7,8 @@ they are switched off, and the app does not keep its own pool."""
 import os
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, event, inspect
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -39,6 +40,18 @@ def _engine_args(url: str) -> dict:
 
 
 engine = create_engine(DB_URL, **_engine_args(DB_URL))
+
+# Time limits on every PostgreSQL transaction: a runaway query or a stuck lock fails cleanly (and the caller gets
+# a "try again" message, api.py) instead of holding a connection until the platform kills the request. SET LOCAL
+# lasts one transaction, so it also works through Supabase's transaction pooler. Vercel stops a request at 60 s.
+STATEMENT_TIMEOUT, LOCK_TIMEOUT = "50s", "20s"
+
+
+@event.listens_for(Engine, "begin")
+def _time_limits(conn) -> None:
+    if conn.dialect.name == "postgresql":
+        conn.exec_driver_sql(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+        conn.exec_driver_sql(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 # Supabase publishes the public schema through its Data API to anyone holding the project's public "anon" key.

@@ -9,6 +9,7 @@ import csv
 import hmac
 import io
 import logging
+import re
 import os
 import secrets
 import threading
@@ -21,11 +22,11 @@ from decimal import Decimal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, text, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from . import audit, auth, boardpack, daraja, guarantors, returns, risk, sms, ussd
@@ -36,7 +37,7 @@ from .engine.collections import build_queue, portfolio_at_risk
 from .engine import allocation, appraisal, exposure
 from .engine.matching import allocate, run_matching
 from .importers import sources
-from .importers.common import norm_phone
+from .importers.common import BadFile, BadValue, norm_phone
 from .models import (Allocation, AllocationRules, ApiKey, CoreGuarantee, Guarantee, PortfolioSnapshot, LoanApplication, LoanDecision, LoanProduct, AuditEvent, ExceptionItem, Institution, Loan, Member, MpesaCallback,
                      Reminder, SmsMessage, SmsOptOut, SmsSettings, StaffSession, StaffUser, Transaction)
 
@@ -156,13 +157,15 @@ def create_first_admin(institution_id: int, body: StaffIn, s: Session = Depends(
 @app.post("/auth/login", tags=["auth"])
 def login(body: LoginIn, request: Request, s: Session = Depends(get_session)):
     ip = auth.client_ip(request)
-    user = auth.authenticate(s, body.email, body.password)
+    user, held = auth.authenticate(s, body.email, body.password, ip)
     if not user:
         known = s.scalar(select(StaffUser).where(StaffUser.email == body.email.strip().lower()))
         if known:  # unknown emails have no institution to log against
+            note = ("too many wrong tries from this address" if held else
+                    "account deactivated" if not known.is_active else "wrong password")
             audit.record(s, audit.anonymous(known.institution_id), "auth.login_failed", "staff_user", known.id,
-                         ip=ip, note="account deactivated" if not known.is_active else "wrong password")
-            s.commit()
+                         ip=ip, note=note)
+        s.commit()
         raise HTTPException(401, "invalid email or password")
     token, expires = auth.issue_session(s, user)
     audit.record(s, Principal.of(user), "auth.login", "staff_user", user.id, ip=ip)
@@ -233,6 +236,7 @@ def update_user(institution_id: int, user_id: int, body: StaffPatch, s: Session 
         auth.check_password_policy(body.password)
         u.password_hash = auth.hash_password(body.password)
         u.must_change_password = True  # the admin knows it; the person picks their own at next login
+        auth.forget_failed_logins(s, u.email)
     if body.is_active is not None:
         u.is_active = body.is_active
     if body.is_active is False or body.password is not None or body.role is not None:
@@ -314,6 +318,23 @@ def _audited(s: Session, who: Principal, action: str, result: dict, note: str | 
     return result
 
 
+MAX_UPLOAD_BYTES = 20 * 1_048_576
+
+
+@app.exception_handler(BadFile)
+async def unsafe_file(request: Request, exc: BadFile):
+    """A file that cannot be imported safely: nothing from it was saved (the transaction was rolled back)."""
+    return JSONResponse({"detail": f"Nothing was imported: {exc}"}, status_code=422)
+
+
+@app.exception_handler(BadValue)
+async def unreadable_value(request: Request, exc: BadValue):
+    """Last line of defence: an amount reached the money code unchecked. Refuse rather than read it as zero."""
+    logging.getLogger("sawazi").error("unchecked unreadable value ref=%s %s: %s", getattr(request.state, "ref", "-"),
+                                      request.url.path, exc)
+    return JSONResponse({"detail": f"Nothing was imported: {exc}."}, status_code=422)
+
+
 @app.post("/institutions/{institution_id}/import/{kind}")
 async def import_file(
     institution_id: int,
@@ -329,7 +350,10 @@ async def import_file(
     _inst(s, institution_id)
     if as_of and as_of > auth.utcnow().date():  # checked before anything is imported
         raise HTTPException(422, "as_of cannot be in the future")
-    content = await file.read()
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"The file is larger than {MAX_UPLOAD_BYTES // 1_048_576} MB. Split it by date range "
+                                 "and upload the parts.")
     note = f"file {file.filename}"
     if kind == "core_guarantees":
         result = sources.import_core_guarantees(s, institution_id, content, replace=replace).as_dict()
@@ -362,8 +386,7 @@ def checkoff(institution_id: int, employer: str, period: str, s: Session = Depen
 def match(institution_id: int, s: Session = Depends(get_session), who: Principal = Depends(require("reconcile"))):
     _inst(s, institution_id)
     with matching_lock(s, institution_id):
-        result = run_matching(s, institution_id)
-    result["guarantees_released"] = guarantors.release_repaid(s, institution_id)
+        result = run_matching(s, institution_id)  # also releases guarantees on loans now repaid
     return _audited(s, who, "match.run", result)
 
 
@@ -540,18 +563,40 @@ def postings(institution_id: int, s: Session = Depends(get_session), who: Princi
         .where(Allocation.institution_id == institution_id)
         .order_by(Transaction.txn_time)
     ).all()
+    # A real-time M-Pesa callback is not proof of payment until the paybill statement confirms it: until then its
+    # allocations stay out of the file, so the core system never posts money that may not have arrived.
+    unconfirmed = set(s.scalars(select(MpesaCallback.transaction_id).where(
+        MpesaCallback.institution_id == institution_id, MpesaCallback.statement_confirmed_at.is_(None),
+        MpesaCallback.transaction_id.is_not(None))))
+    held = [r for r in rows if r[1].id in unconfirmed]
+    rows = [r for r in rows if r[1].id not in unconfirmed]
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["date", "source", "reference", "member_no", "member_name", "target", "loan_no", "amount"])
     for a, t, m, ln in rows:
-        w.writerow([t.txn_time.strftime("%Y-%m-%d %H:%M"), t.source, t.reference, m.member_no, m.name,
-                    a.target, ln.loan_no if ln else "", f"{a.amount_cents / 100:.2f}"])
+        w.writerow(csv_safe([t.txn_time.strftime("%Y-%m-%d %H:%M"), t.source, t.reference, m.member_no, m.name,
+                             a.target, ln.loan_no if ln else "", f"{a.amount_cents / 100:.2f}"]))
     buf.seek(0)
     # member-level money leaving the system: record who took it
-    audit.record(s, who, "export.postings", after={"rows": len(rows)})
+    audit.record(s, who, "export.postings", after={"rows": len(rows), "held_until_statement": len(held)})
     s.commit()
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
-                             headers={"Content-Disposition": "attachment; filename=sawazi_postings.csv"})
+                             headers={"Content-Disposition": "attachment; filename=sawazi_postings.csv",
+                                      "X-Sawazi-Held-Until-Statement": str(len({r[1].id for r in held}))})
+
+
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_safe(cells: list) -> list:
+    """Text a payer or an export typed can start with = + - @, which Excel would run as a formula when an accountant
+    opens the file. Such cells get a leading apostrophe; numbers (including negative ones) are left alone."""
+    out = []
+    for v in cells:
+        if isinstance(v, str) and v.startswith(_FORMULA_START) and not re.fullmatch(r"-?\d+(\.\d+)?", v):
+            v = "'" + v
+        out.append(v)
+    return out
 
 
 # ---------------------------------------------------------------- audit log
@@ -791,10 +836,23 @@ def put_sms_settings(institution_id: int, body: SmsSettingsIn, s: Session = Depe
 # Register https://<host>/callbacks/taifa/<token>/{delivery,subscription,incoming} with Taifa Mobile,
 # and allow only Taifa's IP addresses at the reverse proxy if they publish them.
 
-def _callback_token(token: str) -> None:
+def _caller_allowed(request: Request, setting: str) -> str | None:
+    """Callbacks need both the secret in their URL and a caller on the provider's allow-list. The secret alone can
+    leak (it sits in logs and in the provider's dashboard), so an empty allow-list refuses everyone, unless
+    SAWAZI_CALLBACKS_OPEN=1 is set for a sandbox or a local trial. Returns the caller's address."""
+    ip = auth.client_ip(request)
+    allowed = {x.strip() for x in os.getenv(setting, "").split(",") if x.strip()}
+    if ip in allowed or (not allowed and os.getenv("SAWAZI_CALLBACKS_OPEN") == "1"):
+        return ip
+    log.warning("callback from %s refused: not in %s", ip, setting)
+    raise HTTPException(404, "not found")
+
+
+def _callback_token(token: str, request: Request) -> None:
     expected = os.getenv("SAWAZI_SMS_CALLBACK_TOKEN")
     if not expected or not hmac.compare_digest(token, expected):
         raise HTTPException(404, "not found")
+    _caller_allowed(request, "SAWAZI_SMS_ALLOWED_IPS")
 
 
 CALLBACK = Principal("provider", None, 0, "", "Taifa Mobile callback")
@@ -827,8 +885,8 @@ def _member_opt_out(s: Session, service: dict | None, phone: str | None, source:
 
 
 @app.post("/callbacks/taifa/{token}/delivery", tags=["callbacks"], include_in_schema=False)
-def taifa_delivery(token: str, body: dict, s: Session = Depends(get_session)):
-    _callback_token(token)
+def taifa_delivery(token: str, body: dict, request: Request, s: Session = Depends(get_session)):
+    _callback_token(token, request)
     msg = s.scalar(select(SmsMessage).where(SmsMessage.provider == "taifa",
                                             SmsMessage.provider_message_id == str(body.get("messageId"))))
     if not msg:
@@ -846,8 +904,8 @@ def taifa_delivery(token: str, body: dict, s: Session = Depends(get_session)):
 
 
 @app.post("/callbacks/taifa/{token}/subscription", tags=["callbacks"], include_in_schema=False)
-def taifa_subscription(token: str, body: dict, s: Session = Depends(get_session)):
-    _callback_token(token)
+def taifa_subscription(token: str, body: dict, request: Request, s: Session = Depends(get_session)):
+    _callback_token(token, request)
     if str(body.get("update_description", "")).upper() == "DEACTIVATION":
         n = _member_opt_out(s, body.get("service"), body.get("phone_number"), "subscription",
                             "member unsubscribed from the service")
@@ -856,8 +914,8 @@ def taifa_subscription(token: str, body: dict, s: Session = Depends(get_session)
 
 
 @app.post("/callbacks/taifa/{token}/incoming", tags=["callbacks"], include_in_schema=False)
-def taifa_incoming(token: str, body: dict, s: Session = Depends(get_session)):
-    _callback_token(token)
+def taifa_incoming(token: str, body: dict, request: Request, s: Session = Depends(get_session)):
+    _callback_token(token, request)
     if sms.is_stop(body.get("message")):
         n = _member_opt_out(s, body.get("service"), body.get("phone_number"), "member_sms",
                             f"member replied: {str(body.get('message'))[:50]}")
@@ -878,12 +936,7 @@ def _c2b_guard(token: str, request: Request) -> str | None:
     expected = os.getenv("SAWAZI_DARAJA_CALLBACK_TOKEN")
     if not expected or not hmac.compare_digest(token, expected):
         raise HTTPException(404, "not found")
-    ip = auth.client_ip(request)
-    allowed = {x.strip() for x in os.getenv("SAWAZI_DARAJA_ALLOWED_IPS", "").split(",") if x.strip()}
-    if allowed and ip not in allowed:
-        log.warning("C2B callback from %s refused (not in SAWAZI_DARAJA_ALLOWED_IPS)", ip)
-        raise HTTPException(404, "not found")
-    return ip
+    return _caller_allowed(request, "SAWAZI_DARAJA_ALLOWED_IPS")
 
 
 def _institution_for_shortcode(s: Session, shortcode: str) -> Institution | None:
@@ -958,9 +1011,7 @@ def c2b_confirmation(token: str, body: dict, request: Request, s: Session = Depe
     s.commit()
     try:
         with matching_lock(s, inst.id):
-            run_matching(s, inst.id)
-            guarantors.release_repaid(s, inst.id)
-            s.commit()
+            run_matching(s, inst.id)  # allocates and releases guarantees on loans now repaid, then commits
     except Exception:  # the payment is stored; the next match run picks it up
         s.rollback()
         log.exception("C2B real-time matching failed for institution %s", inst.id)
@@ -1391,8 +1442,21 @@ def decide_application(institution_id: int, app_id: int, body: DecisionIn, s: Se
     a = _get_application(s, institution_id, app_id, lock=True)  # row lock: two approvers at once stay consistent
     if a.status != "submitted":
         raise HTTPException(409, f"application is {a.status}, not waiting for a decision")
-    if a.prepared_by_user_id == who.id:
-        raise HTTPException(403, "you prepared this application, so another approver must decide")
+    makers = set(s.scalars(select(AuditEvent.actor_id).where(
+        AuditEvent.institution_id == institution_id, AuditEvent.entity_type == "loan_application",
+        AuditEvent.entity_id == a.id, AuditEvent.actor_kind == "user",
+        AuditEvent.action.in_(("loan_application.create", "loan_application.update", "loan_application.submit")))))
+    makers.discard(None)
+    if a.prepared_by_user_id:
+        makers.add(a.prepared_by_user_id)
+    if who.id in makers:
+        raise HTTPException(403, "you prepared, changed or submitted this application, so another approver must decide")
+    for e in s.scalars(select(AuditEvent).where(  # an approver account set up or reset by one of them
+            AuditEvent.institution_id == institution_id, AuditEvent.entity_type == "staff_user",
+            AuditEvent.entity_id == who.id, AuditEvent.action.in_(("user.create", "user.update")))):
+        if e.actor_id in makers and (e.action == "user.create" or (e.after or {}).get("password_reset")):
+            raise HTTPException(403, "your account was set up or its password reset by someone who worked on this "
+                                     "application, so another approver must decide")
     if s.scalar(select(LoanDecision.id).where(LoanDecision.application_id == a.id, LoanDecision.user_id == who.id)):
         raise HTTPException(409, "you have already decided on this application")
     result = _appraise_application(s, a)  # decide on today's figures, not the ones at submission
@@ -1439,8 +1503,8 @@ def export_approved(institution_id: int, s: Session = Depends(get_session),
         m, prod = s.get(Member, a.member_id), s.get(LoanProduct, a.product_id)
         approvers = [s.get(StaffUser, d.user_id).name for d in s.scalars(
             select(LoanDecision).where(LoanDecision.application_id == a.id, LoanDecision.decision == "approve"))]
-        w.writerow([f"SWZ-{a.id}", m.member_no, m.name, prod.code, f"{a.amount_cents / 100:.2f}", a.term_months,
-                    a.decided_at.strftime("%Y-%m-%d %H:%M"), "; ".join(approvers), "yes" if a.override_reason else "no"])
+        w.writerow(csv_safe([f"SWZ-{a.id}", m.member_no, m.name, prod.code, f"{a.amount_cents / 100:.2f}", a.term_months,
+                    a.decided_at.strftime("%Y-%m-%d %H:%M"), "; ".join(approvers), "yes" if a.override_reason else "no"]))
         a.status, a.exported_at = "exported", now
     audit.record(s, who, "loan_application.export", after={"applications": [a.id for a in apps]})
     s.commit()
@@ -1747,10 +1811,7 @@ async def ussd_callback(token: str, request: Request, s: Session = Depends(get_s
     expected = os.getenv("SAWAZI_USSD_CALLBACK_TOKEN")
     if not expected or not hmac.compare_digest(token, expected):
         raise HTTPException(404, "not found")
-    ip = auth.client_ip(request)
-    allowed = {x.strip() for x in os.getenv("SAWAZI_USSD_ALLOWED_IPS", "").split(",") if x.strip()}
-    if allowed and ip not in allowed:
-        raise HTTPException(404, "not found")
+    ip = _caller_allowed(request, "SAWAZI_USSD_ALLOWED_IPS")
     fields: dict = dict(request.query_params)
     if request.method == "POST":
         if "json" in request.headers.get("content-type", ""):
@@ -1873,9 +1934,9 @@ def form4_lines(institution_id: int, s: Session = Depends(get_session), who: Pri
     w.writerow(["loan_no", "member_no", "member_name", "product", "principal", "balance", "days_in_arrears",
                 "class", "provision_rate_pct", "provision", "interest_arrears"])
     for x in r["lines"]:
-        w.writerow([x.loan_no, x.member_no, x.member, x.product, f"{x.principal_cents / 100:.2f}",
+        w.writerow(csv_safe([x.loan_no, x.member_no, x.member, x.product, f"{x.principal_cents / 100:.2f}",
                     f"{x.balance_cents / 100:.2f}", x.days_in_arrears, x.loan_class, f"{x.rate_bps / 100:g}",
-                    f"{x.provision_cents / 100:.2f}", f"{x.interest_arrears_cents / 100:.2f}"])
+                    f"{x.provision_cents / 100:.2f}", f"{x.interest_arrears_cents / 100:.2f}"]))
     audit.record(s, who, "returns.form4_download", note=f"Form 4 working schedule {r['quarter']}")
     s.commit()
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv", headers={
@@ -1899,7 +1960,9 @@ APP_CSP = CONSOLE_CSP + "; manifest-src 'self'; worker-src 'self'"
 
 @app.middleware("http")
 async def console_security_headers(request: Request, call_next):
+    request.state.ref = secrets.token_hex(4)  # quoted in error messages and the log
     response = await call_next(request)
+    response.headers["X-Sawazi-Ref"] = request.state.ref
     if request.url.path.startswith("/g/"):
         response.headers["Content-Security-Policy"] = guarantors.PAGE_CSP
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -1925,6 +1988,26 @@ async def console_security_headers(request: Request, call_next):
 
 
 _schema_checked = False
+
+
+@app.exception_handler(OperationalError)
+async def database_busy(request: Request, exc: OperationalError):
+    """A time limit hit (lock or statement) or the database briefly unreachable: say so plainly, nothing is half-done
+    because the transaction was rolled back."""
+    ref = getattr(request.state, "ref", "-")
+    logging.getLogger("sawazi").error("database error ref=%s %s %s: %s", ref, request.method, request.url.path,
+                                      str(exc.orig).splitlines()[0] if exc.orig else exc)
+    return JSONResponse({"detail": f"The system is busy. Nothing was changed; please try again in a minute. (Reference {ref})"},
+                        status_code=503, headers={"Retry-After": "30"})
+
+
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception):
+    """Anything unforeseen: the full error goes to the log under a short reference the user can quote."""
+    ref = getattr(request.state, "ref", "-")
+    logging.getLogger("sawazi").exception("unhandled error ref=%s %s %s", ref, request.method, request.url.path)
+    return JSONResponse({"detail": f"Something went wrong on our side. Please quote reference {ref} to Pesara support."},
+                        status_code=500)
 
 
 @app.exception_handler(HTTPException)

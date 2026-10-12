@@ -5,6 +5,15 @@ import csv
 import io
 import re
 from datetime import date, datetime
+from decimal import Decimal
+
+
+class BadValue(ValueError):
+    """A cell Sawazi cannot read with certainty. The row is rejected; it is never read as zero."""
+
+
+class BadFile(ValueError):
+    """A file Sawazi cannot import safely (missing or clashing columns). Nothing from it is saved."""
 
 DATE_FORMATS = [
     "%Y-%m-%d %H:%M:%S",
@@ -19,6 +28,11 @@ DATE_FORMATS = [
     "%d.%m.%Y",
     "%d-%b-%Y",
     "%d %b %Y",
+    "%d/%m/%y",
+    "%d-%m-%y",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M",
+    "%Y/%m/%d",
 ]
 
 
@@ -31,6 +45,10 @@ def read_rows(content: bytes | str) -> list[dict[str, str]]:
     if isinstance(content, bytes):
         content = content.decode("utf-8-sig", errors="replace")
     reader = csv.DictReader(io.StringIO(content))
+    names = [norm_header(h) for h in (reader.fieldnames or []) if h is not None]
+    clashes = sorted({n for n in names if n and names.count(n) > 1})
+    if clashes:  # e.g. "Amount" and "Amount " in one file: one column would silently win
+        raise BadFile(f"the file has two columns called '{clashes[0]}'. Rename or remove one and upload again.")
     rows = []
     for raw in reader:
         row = {norm_header(k): (v or "").strip() for k, v in raw.items() if k is not None}
@@ -48,21 +66,51 @@ def pick(row: dict[str, str], *names: str) -> str:
     return ""
 
 
+_CURRENCY = re.compile(r"k(?:es|shs?)\.?|/=", re.IGNORECASE)
+_PLAIN = re.compile(r"\d+(?:\.\d{1,2})?")
+
+
 def to_cents(value: str | float | int | None) -> int:
+    """Shillings as written in Kenyan exports, to integer cents. A blank cell is 0. Anything that cannot be read
+    with certainty raises BadValue: "KSH 1,500.00", "1 500.00", "1,000.00 CR", "(500)" and "500-" are read;
+    "1.234,50", "N/A" or "12abc" are refused rather than guessed."""
     if value is None:
         return 0
-    if isinstance(value, (int, float)):
-        return int(round(float(value) * 100))
-    s = str(value).strip().replace(",", "").replace("KES", "").replace("Ksh", "").strip()
-    if not s or s in {"-", "--"}:
+    if isinstance(value, bool):
+        raise BadValue(f"'{value}' is not an amount")
+    if isinstance(value, int):
+        return value * 100
+    if isinstance(value, float):
+        return int((Decimal(repr(value)) * 100).to_integral_value())
+    raw = str(value).strip()
+    s = _CURRENCY.sub("", raw).replace("\u00a0", " ").strip()
+    if s in {"", "-", "--"}:
         return 0
-    negative = s.startswith("(") and s.endswith(")")
-    s = s.strip("()")
-    try:
-        cents = int(round(float(s) * 100))
-    except ValueError:
-        return 0
+    negative = False
+    if s[-2:].upper() in {"CR", "DR"}:
+        negative, s = s[-2:].upper() == "DR", s[:-2].strip()
+    if s.startswith("(") and s.endswith(")"):
+        negative, s = True, s[1:-1].strip()
+    if s.startswith("-") or s.endswith("-"):
+        negative, s = True, s.strip("-").strip()
+    s = s.replace(",", "").replace(" ", "")
+    if not _PLAIN.fullmatch(s):
+        raise BadValue(f"'{raw}' is not an amount Sawazi can read")
+    cents = int(Decimal(s) * 100)
     return -cents if negative else cents
+
+
+def amount_problem(row: dict[str, str], *names: str) -> str | None:
+    """Why the first filled amount among these columns cannot be read, or None if it can (or is blank)."""
+    try:
+        to_cents(pick(row, *names))
+    except BadValue as e:
+        return str(e)
+    return None
+
+
+def has_column(rows: list[dict[str, str]], *names: str) -> bool:
+    return bool(rows) and any(n in rows[0] for n in names)
 
 
 def to_datetime(value: str) -> datetime | None:

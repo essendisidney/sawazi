@@ -112,8 +112,9 @@ def test_pin_lockout(members):
     assert "Too many wrong PINs" in c.post("/m/login", json={"device_token": dev, "pin": "9999"}).json()["detail"]
     r = c.post("/m/login", json={"device_token": dev, "pin": PIN})
     assert r.status_code == 423  # even the right PIN waits out the lock
-    sign_up(c, phone, pin="5937")  # an SMS code resets the PIN (forgotten PIN)
-    assert c.post("/m/login", json={"device_token": dev, "pin": "5937"}).status_code == 200
+    fresh = sign_up(c, phone, pin="5937")["device_token"]  # an SMS code resets the PIN (forgotten PIN)
+    assert c.post("/m/login", json={"device_token": fresh, "pin": "5937"}).status_code == 200
+    assert c.post("/m/login", json={"device_token": dev, "pin": "5937"}).status_code == 401  # the old key is signed out
 
 
 def test_member_and_staff_tokens_never_cross(members):

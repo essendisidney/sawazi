@@ -9,7 +9,7 @@ when its "done when" is true.
 | 1 | Native-speaker check of the Swahili on the guarantor page and in the member app | Sidney + a native speaker | Guarantor requests, member app |
 | 2 | `SAWAZI_PUBLIC_URL` on the live server | Whoever deploys | Guarantor requests |
 | 3 | Deposits-multiplier policy confirmed with the pilot SACCO | Sidney + SACCO credit committee | Loan appraisal |
-| 4 | Taifa Mobile SMS: number format and API key confirmed, one live test | Sidney (Taifa account) | Real SMS |
+| 4 | Taifa Mobile SMS: number format and API key confirmed, Taifa's sending addresses in `SAWAZI_SMS_ALLOWED_IPS`, one live test | Sidney (Taifa account) | Real SMS |
 | 5 | Taifa Mobile USSD: service code, sandbox run, gateway IPs | Sidney (Taifa account) | USSD consent |
 | 6 | Daraja C2B tested in the Safaricom sandbox | Sidney (Daraja app) | Real-time M-Pesa |
 | 7 | Core-system guarantee export, and SASRA classification rates checked | Sidney + pilot SACCO | Risk view |
