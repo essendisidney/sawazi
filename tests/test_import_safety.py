@@ -160,3 +160,17 @@ def test_a_safaricom_reversal_is_raised_for_a_person_once(acc):
     with Session() as s:
         items = s.scalars(select(ExceptionItem).where(ExceptionItem.kind == "mpesa_reversal")).all()
         assert len(items) == 1 and items[0].severity == "high" and items[0].amount_cents == 150000
+
+
+def test_bank_references_are_kept_unless_reused(acc):
+    c, Session, h = acc
+    up(c, h, "bank", "Date,Narrative,Reference,Credit\n01/09/2026,DEP A,BATCH01,1000\n01/09/2026,DEP B,BATCH01,2000\n"
+                     "01/09/2026,DEP C,TX777,3000\n")
+    up(c, h, "bank", "Date,Narrative,Reference,Credit\n01/10/2026,DEP D,BATCH01,4000\n")  # the bank reuses a batch number
+    again = up(c, h, "bank", "Date,Narrative,Reference,Credit\n01/09/2026,DEP A,BATCH01,1000\n01/09/2026,DEP B,BATCH01,2000\n"
+                             "01/09/2026,DEP C,TX777,3000\n").json()
+    assert (again["created"], again["skipped_duplicates"]) == (0, 3)
+    with Session() as s:
+        refs = {t.amount_cents: t.reference for t in s.scalars(select(Transaction).where(Transaction.source == "bank"))}
+    assert refs[100000] == "BATCH01" and refs[300000] == "TX777"  # the bank's own reference where it identifies the line
+    assert refs[200000].startswith("H") and refs[400000].startswith("H")  # repeated in the file, or reused later

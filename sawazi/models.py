@@ -573,3 +573,75 @@ class MemberSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+# ---------------------------------------------------------------- MFI group lending (joint liability)
+
+class LendingGroup(Base):
+    """A borrowing group: members borrow individually and the whole group stands behind every member's loan.
+    It meets weekly or fortnightly with its loan officer."""
+
+    __tablename__ = "lending_groups"
+    __table_args__ = (UniqueConstraint("institution_id", "group_no"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    group_no: Mapped[str] = mapped_column(String(40))  # also the M-Pesa account a member types to pay for the group
+    name: Mapped[str] = mapped_column(String(200))
+    meeting_day: Mapped[int | None] = mapped_column(Integer)  # 0 Monday .. 6 Sunday
+    frequency: Mapped[str] = mapped_column(String(12), default="weekly")  # weekly | fortnightly
+    officer_user_id: Mapped[int | None] = mapped_column(ForeignKey("staff_users.id"))
+    status: Mapped[str] = mapped_column(String(12), default="active")  # active | closed
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class GroupMember(Base):
+    """A member's place in a group. A member belongs to at most one active group (left_on is empty)."""
+
+    __tablename__ = "group_members"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("lending_groups.id"), index=True)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id"), index=True)
+    role: Mapped[str] = mapped_column(String(20), default="member")  # member | chair | treasurer | secretary
+    joined_on: Mapped[date] = mapped_column(Date)
+    left_on: Mapped[date | None] = mapped_column(Date)
+
+
+class MeetingSheet(Base):
+    """What each member owed and paid at one meeting. Cash paid at the meeting becomes money for the core system
+    only when the group's bank deposit for it is matched (status banked): Sawazi never treats cash it has not seen
+    banked as paid."""
+
+    __tablename__ = "meeting_sheets"
+    __table_args__ = (UniqueConstraint("group_id", "meeting_on"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("lending_groups.id"), index=True)
+    meeting_on: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(12), default="draft")  # draft | submitted | banked
+    cash_cents: Mapped[int] = mapped_column(BigInteger, default=0)  # total cash collected (when submitted)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("staff_users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    banked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    bank_transaction_id: Mapped[int | None] = mapped_column(ForeignKey("transactions.id"))
+
+
+class SheetLine(Base):
+    """One member's line on a meeting sheet."""
+
+    __tablename__ = "sheet_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    sheet_id: Mapped[int] = mapped_column(ForeignKey("meeting_sheets.id"), index=True)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id"))
+    loan_id: Mapped[int | None] = mapped_column(ForeignKey("loans.id"))
+    due_cents: Mapped[int] = mapped_column(BigInteger, default=0)  # instalment plus anything overdue
+    mpesa_cents: Mapped[int] = mapped_column(BigInteger, default=0)  # already paid by M-Pesa since the last meeting
+    cash_cents: Mapped[int] = mapped_column(BigInteger, default=0)  # paid in cash at this meeting
+    present: Mapped[bool] = mapped_column(Boolean, default=True)
+    note: Mapped[str | None] = mapped_column(String(200))

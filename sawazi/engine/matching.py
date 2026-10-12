@@ -48,6 +48,9 @@ class MemberIndex:
         loans = list(s.scalars(select(Loan).where(Loan.institution_id == institution_id)))
         self.loan_by_no = {norm_ref(ln.loan_no): ln for ln in loans}
         self.member_nos = list(self.by_no.keys())
+        from ..models import LendingGroup
+        self.group_nos = {norm_ref(g) for g in s.scalars(select(LendingGroup.group_no).where(
+            LendingGroup.institution_id == institution_id))}
 
     def name_lookup(self, text: str) -> int | None:
         """Member whose every name appears in the text (allowing small spelling slips). Unique hits only."""
@@ -110,6 +113,9 @@ def find_member(idx: MemberIndex, t: Transaction) -> tuple[Candidate | None, str
             hit = None
         return hit
 
+    if ref and ref in idx.group_nos:  # paid to the group's account: several members' money, never guessed
+        return None, (f"paid to group {ref}'s account: match it to the group's meeting sheet as banked cash, "
+                      "or split it across the members who paid")
     if ref:
         hit = lookup(ref)
         if hit:

@@ -18,7 +18,7 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 - Phase 1 DONE: repayment matching, check-off reconciliation, collections, console, SMS, C2B, PostgreSQL.
 - Phase 2 DONE: loan factory (digital applications, appraisal), digital guarantor network (SMS link + USSD)
 - Phase 3 (current): exposure/risk view, board pack, SASRA/CBK return generation, member app
-- Phase 4: cross-institution network (guarantee exposure, sector benchmarks), MFI group lending, regional
+- Phase 4: cross-institution network (guarantee exposure, sector benchmarks), MFI group lending (STARTED), regional
 
 ## Phase 3 — status
 1. Risk and exposure view DONE (`sawazi/engine/exposure.py`, `GET /risk`, console Risk page). Core-system guarantees
@@ -41,6 +41,18 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
    guarantor view of each backed loan's state only (never its figures), top-up requests (`top_up_loan_id`)
 5. Pilot polish DONE: staff choose their own password after anyone else set it (`must_change_password`, enforced in
    `auth.current_principal`); institutions can be marked `is_demo` (banner in console and app)
+
+## Phase 4 — MFI group lending (started)
+- Joint liability (Sidney's answer): members borrow individually, the whole group stands behind every loan; groups meet
+  weekly or fortnightly; collection by M-Pesa AND cash banked after the meeting. `sawazi/groups_api.py`, console Groups
+- Groups and members (one active group per member) by console or upload (`groups`, `group_members` imports)
+- Meeting sheets: due = instalment + arrears; M-Pesa since the last meeting filled in; officer records cash; close
+- Cash becomes money only when the group's bank deposit is matched to the sheet and the amounts agree exactly (`resolve`,
+  human only); the deposit itself becomes `banked_sheet` and is never allocated again; each member's cash is a
+  `group_cash` payment allocated to their loan
+- Money paid to a group's number goes to suspense ("paid to group X's account"); staff split it across members with
+  shares that must add up exactly (`/exceptions/{id}/split`), never guessed
+- Next: group arrears in the Risk view and board pack; group loan products if a pilot MFI lends to groups as a whole
 
 ## Phase 2 — done
 1. Member balances and pay DONE (members export columns + `member_balances` import; unknown is never zero)

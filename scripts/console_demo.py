@@ -82,6 +82,16 @@ def seed():
                      {"code": "EMG", "name": "Emergency Loan", "max_amount_kes": 200_000, "max_term_months": 12,
                       "interest_rate_pct": 12, "min_membership_months": 3, "guarantor_cover": "none"}]:
             c.post(f"/institutions/{iid}/loan-products", json=prod).raise_for_status()
+        # two fictional MFI-style groups, to show group lending
+        groups = "\n".join(["Group No,Group Name,Meeting Day,Frequency,Officer Email",
+                            "UMJ01,Umoja Women Group,Tuesday,weekly,credit.officer@ufanisi.test",
+                            "TMN02,Tumaini Traders,Thursday,fortnightly,credit.officer@ufanisi.test"])
+        c.post(f"/institutions/{iid}/import/groups", files={"file": ("groups.csv", groups.encode())}).raise_for_status()
+        roles = ["chair", "treasurer", "secretary", "member", "member", "member"]
+        lines = ["Group No,Member No,Role"] + [f"UMJ01,UT{n:05d},{roles[n - 1]}" for n in range(1, 7)] + \
+                [f"TMN02,UT{n:05d},{roles[n - 7]}" for n in range(7, 13)]
+        c.post(f"/institutions/{iid}/import/group_members",
+               files={"file": ("members.csv", "\n".join(lines).encode())}).raise_for_status()
         c.post("/auth/logout")
         tok = c.post("/auth/login", json={"email": "credit.officer@ufanisi.test", "password": DEMO_PASSWORD}).json()["token"]
         c.headers["Authorization"] = f"Bearer {tok}"
