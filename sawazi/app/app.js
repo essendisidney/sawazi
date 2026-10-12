@@ -19,7 +19,12 @@ const T = {
     pinAgain: "Type it again", pinsDiffer: "The two PINs are different.", save: "Save and open", enterPin: "Enter your PIN",
     unlock: "Open", forgot: "Forgot your PIN or using a new phone?", useSms: "Sign in with an SMS code",
     money: "Money", guarantees: "Guarantees", loan: "Loan", hello: "Hello", savings: "Your savings", onTrack: "Up to date",
-    payWith: "Pay with M-Pesa: Lipa na M-Pesa, then Pay Bill", nextDue: "Next due", deposits: "Deposits", shares: "Share capital", asAt: "as at",
+    payWith: "Pay with M-Pesa: Lipa na M-Pesa, then Pay Bill", nextDue: "Next due",
+    dueSoon: "Your instalment of", dueIn: "is due", dueToday: "today", dueDays: "in {n} days",
+    statement: "Statement", from: "From", to: "To", download: "Download statement",
+    statementNote: "Payments Sawazi matched to you, and where each shilling went. Your SACCO's statement is the official record.",
+    newLoan: "A new loan", topUp: "Top up", whatKind: "New loan or top-up?", loanState: { up_to_date: "Being repaid on time", behind: "Behind with repayments",
+      repaid: "Repaid", written_off: "Written off", not_paid_out: "Not paid out yet" }, deposits: "Deposits", shares: "Share capital", asAt: "as at",
     notKnown: "not known yet", loanBal: "Balance", overdue: "Overdue", daysLate: "days late", instalment: "Monthly instalment",
     howToPay: "How to pay", paybill: "Paybill", account: "Account", copy: "Copy", copied: "Copied",
     payDeposits: "To add to your deposits", recent: "Recent payments", noLoans: "You have no active loans.", noPays: "No payments yet.",
@@ -45,7 +50,12 @@ const T = {
     pinAgain: "Iandike tena", pinsDiffer: "PIN hizo mbili hazilingani.", save: "Hifadhi na ufungue", enterPin: "Weka PIN yako",
     unlock: "Fungua", forgot: "Umesahau PIN au unatumia simu mpya?", useSms: "Ingia kwa nambari ya SMS",
     money: "Pesa", guarantees: "Dhamana", loan: "Mkopo", hello: "Habari", savings: "Akiba yako", onTrack: "Hujachelewa",
-    payWith: "Lipa kwa M-Pesa: Lipa na M-Pesa, kisha Pay Bill", nextDue: "Tarehe ya kulipa", deposits: "Akiba", shares: "Hisa", asAt: "hadi",
+    payWith: "Lipa kwa M-Pesa: Lipa na M-Pesa, kisha Pay Bill", nextDue: "Tarehe ya kulipa",
+    dueSoon: "Rejesho lako la", dueIn: "linadaiwa", dueToday: "leo", dueDays: "baada ya siku {n}",
+    statement: "Taarifa ya malipo", from: "Kuanzia", to: "Hadi", download: "Pakua taarifa",
+    statementNote: "Malipo ambayo Sawazi imelinganisha nawe, na kila shilingi ilikoenda. Taarifa ya SACCO yako ndiyo rasmi.",
+    newLoan: "Mkopo mpya", topUp: "Ongeza mkopo", whatKind: "Mkopo mpya au kuongeza?", loanState: { up_to_date: "Unalipwa kwa wakati", behind: "Umechelewa kulipwa",
+      repaid: "Umelipwa", written_off: "Umefutwa", not_paid_out: "Bado haujatolewa" }, deposits: "Akiba", shares: "Hisa", asAt: "hadi",
     notKnown: "bado haijulikani", loanBal: "Salio", overdue: "Imechelewa", daysLate: "siku za kuchelewa", instalment: "Rejesho la mwezi",
     howToPay: "Jinsi ya kulipa", paybill: "Paybill", account: "Akaunti", copy: "Nakili", copied: "Imenakiliwa",
     payDeposits: "Kuongeza akiba yako", recent: "Malipo ya hivi karibuni", noLoans: "Huna mkopo unaoendelea.", noPays: "Bado hakuna malipo.",
@@ -279,7 +289,14 @@ async function viewMoney() {
       late ? alertBox(l.days_in_arrears > 30 ? "bad" : "warn", `${t("overdue")}: ${kes(l.arrears_kes)}`) : null,
       payBox(l.pay));
   });
+  const today = new Date(new Date().toDateString());
+  const soon = o.loans.filter((l) => l.next_due_on && l.arrears_kes <= 0).map((l) => {
+    const days = Math.round((new Date(l.next_due_on) - today) / 86400000);
+    return days >= 0 && days <= 5 ? alertBox("warn", `${t("dueSoon")} ${kes(l.installment_kes)} (${l.loan_no}) ${t("dueIn")} ` +
+      (days === 0 ? t("dueToday") : t("dueDays").replace("{n}", days)) + ".") : null;
+  });
   return [
+    ...soon,
     h("section", { class: "hero" },
       h("p", { class: "hello" }, `${t("hello")}, ${state.member.name.split(/\s+/)[0]}`),
       h("div", { class: "label" }, t("deposits")),
@@ -295,7 +312,27 @@ async function viewMoney() {
         h("div", { class: "grow" }, h("div", null, day(p.date)), h("div", { class: "muted small" },
           p.split.map((x) => `${kes(x.kes)} ${(T[state.lang].split[x.to] || x.to)}`).join(" · "))),
         h("b", { class: "num" }, kes(p.kes))))) : h("p", { class: "muted" }, t("noPays"))),
+    statementCard(),
   ];
+}
+
+function statementCard() {
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const end = new Date(), start = new Date(end.getFullYear(), end.getMonth() - 2, 1);
+  const from = h("input", { type: "date", value: iso(start), max: iso(end) });
+  const to = h("input", { type: "date", value: iso(end), max: iso(end) });
+  const slot = h("div"), btn = h("button", { type: "button" }, t("download"));
+  btn.addEventListener("click", () => busy(btn, slot, async () => {
+    const r = await fetch(`/m/statement.csv?start=${encodeURIComponent(from.value)}&end=${encodeURIComponent(to.value)}`,
+      { headers: { Authorization: `Bearer ${state.session}`, "Accept-Language": state.lang } });
+    if (r.status === 401) { state.session = null; showUnlock(); return; }
+    if (!r.ok) throw new ApiError(r.status, (await r.json()).detail);
+    const name = (r.headers.get("content-disposition") || "").match(/filename="([^"]+)"/)?.[1] || "sawazi-statement.csv";
+    const a = h("a", { href: URL.createObjectURL(await r.blob()), download: name });
+    document.body.append(a); a.click(); a.remove();
+  }));
+  return h("section", { class: "card" }, h("h2", null, t("statement")), h("p", { class: "muted small" }, t("statementNote")),
+    h("div", { class: "pair" }, h("label", null, t("from"), from), h("label", null, t("to"), to)), slot, btn);
 }
 
 async function viewGuarantees() {
@@ -317,9 +354,12 @@ async function viewGuarantees() {
     return h("div", { class: "card" }, h("p", null, h("b", null, r.for), ` · ${kes(r.kes)} ${t("ofLoan")} ${kes(r.loan_kes)}`),
       h("p", { class: "muted small" }, t("acceptBody")), h("div", { class: "pair" }, no, yes));
   });
+  const stateChip = (st) => st ? h("span", { class: `chip ${st === "up_to_date" || st === "repaid" ? "ok" : st === "behind" || st === "written_off" ? "bad" : "warn"}` },
+    T[state.lang].loanState[st] || st) : null;
   const list = (rows, who) => rows.length ? h("div", { class: "list" }, rows.map((r) => h("div", { class: "item" },
     h("span", { class: "avatar sm", "aria-hidden": "true" }, initials(r[who])),
-    h("span", { class: "grow" }, r[who], r.loan_no ? h("span", { class: "muted small" }, ` · ${r.loan_no}`) : null), h("b", { class: "num" }, kes(r.kes)))))
+    h("span", { class: "grow" }, r[who], r.loan_no ? h("span", { class: "muted small" }, ` · ${r.loan_no}`) : null,
+      who === "for" && r.loan_state ? h("div", null, stateChip(r.loan_state)) : null), h("b", { class: "num" }, kes(r.kes)))))
     : h("p", { class: "muted" }, t("none"));
   return [
     h("h1", null, t("waiting")), slot,
@@ -331,7 +371,9 @@ async function viewGuarantees() {
 }
 
 async function viewLoan() {
-  const [products, apps] = await Promise.all([api("/m/products"), api("/m/applications")]);
+  const [products, apps, o] = await Promise.all([api("/m/products"), api("/m/applications"), api("/m/overview")]);
+  const kind = h("select", null, h("option", { value: "" }, t("newLoan")),
+    o.loans.map((l) => h("option", { value: l.loan_no }, `${t("topUp")} ${l.loan_no} (${l.product})`)));
   const product = h("select", null, products.map((p) => h("option", { value: p.id }, p.name)));
   const amount = h("input", { type: "number", inputmode: "decimal", min: "1", step: "1", required: true });
   const months = h("input", { type: "number", inputmode: "numeric", min: "1", max: "240", required: true });
@@ -355,12 +397,13 @@ async function viewLoan() {
     e.preventDefault();
     busy(sendBtn, slot, async () => {
       const r = await api("/m/applications", { method: "POST", body: { ...body(), purpose: purpose.value || null,
+        top_up_loan_no: kind.value || null,
         guarantors: gnos.value.split(",").map((x) => x.trim()).filter(Boolean) } });
       slot.replaceChildren(alertBox("ok", `${r.ref}: ${t("sent")}`));
       setTimeout(route, 1800);
     });
   } }, h("h1", null, t("apply")),
-    products.length ? [h("label", null, t("product"), product), h("div", { class: "pair" }, h("label", null, t("amount"), amount), h("label", null, t("months"), months)),
+    products.length ? [o.loans.length ? h("label", null, t("whatKind"), kind) : null, h("label", null, t("product"), product), h("div", { class: "pair" }, h("label", null, t("amount"), amount), h("label", null, t("months"), months)),
       checkBtn, result, h("label", null, t("purpose"), purpose), h("label", null, t("gNos"), gnos), h("p", { class: "muted small" }, t("gHint")),
       slot, sendBtn] : h("p", { class: "muted" }, t("none")));
   return [form, h("section", { class: "card" }, h("h2", null, t("yourApps")),

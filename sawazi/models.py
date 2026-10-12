@@ -399,7 +399,9 @@ class LoanApplication(Base):
     # None while a member's own application waits for a credit officer; set to whoever submits it (maker-checker)
     prepared_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("staff_users.id"))
     source: Mapped[str] = mapped_column(String(20), default="staff")  # staff | member_app
-    nominated_guarantors: Mapped[list | None] = mapped_column(JSON)  # member numbers the member suggested
+    nominated_guarantors: Mapped[list | None] = mapped_column(JSON)
+    # A top-up of an existing loan: the core system adds to that loan instead of opening a new one.
+    top_up_loan_id: Mapped[int | None] = mapped_column(ForeignKey("loans.id"))  # member numbers the member suggested
     created_at: Mapped[datetime] = mapped_column(DateTime)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime)

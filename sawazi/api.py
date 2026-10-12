@@ -1331,6 +1331,7 @@ def _application_out(s: Session, a: LoanApplication, live: bool = False) -> dict
            "amount_kes": a.amount_cents / 100, "term_months": a.term_months, "purpose": a.purpose,
            "approvals_needed": a.approvals_needed, "override_reason": a.override_reason,
            "source": a.source, "nominated_guarantors": a.nominated_guarantors or [],
+            "top_up_of": (s.get(Loan, a.top_up_loan_id).loan_no if a.top_up_loan_id else None),
            "prepared_by_user_id": a.prepared_by_user_id, "created_at": a.created_at,
            "submitted_at": a.submitted_at, "decided_at": a.decided_at, "exported_at": a.exported_at,
            "disbursed_at": a.disbursed_at, "appraisal": a.appraisal, "appraisal_outcome": a.appraisal_outcome,
@@ -1497,14 +1498,15 @@ def export_approved(institution_id: int, s: Session = Depends(get_session),
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["sawazi_ref", "member_no", "member_name", "product_code", "amount", "term_months", "approved_at",
-                "approved_by", "with_exceptions"])
+                "approved_by", "with_exceptions", "top_up_of_loan_no"])
     now = auth.utcnow()
     for a in apps:
         m, prod = s.get(Member, a.member_id), s.get(LoanProduct, a.product_id)
         approvers = [s.get(StaffUser, d.user_id).name for d in s.scalars(
             select(LoanDecision).where(LoanDecision.application_id == a.id, LoanDecision.decision == "approve"))]
         w.writerow(csv_safe([f"SWZ-{a.id}", m.member_no, m.name, prod.code, f"{a.amount_cents / 100:.2f}", a.term_months,
-                    a.decided_at.strftime("%Y-%m-%d %H:%M"), "; ".join(approvers), "yes" if a.override_reason else "no"]))
+                    a.decided_at.strftime("%Y-%m-%d %H:%M"), "; ".join(approvers), "yes" if a.override_reason else "no",
+                    s.get(Loan, a.top_up_loan_id).loan_no if a.top_up_loan_id else ""]))
         a.status, a.exported_at = "exported", now
     audit.record(s, who, "loan_application.export", after={"applications": [a.id for a in apps]})
     s.commit()
