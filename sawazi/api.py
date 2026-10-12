@@ -1,4 +1,4 @@
-"""Sawazi, a product of Pesara Limited: HTTP API.
+"""Sawazi HTTP API, staff console, member app and public landing page.
 
 Run:  uvicorn sawazi.api:app --reload
 Docs: http://localhost:8000/docs
@@ -21,7 +21,7 @@ from decimal import Decimal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, text, update
@@ -46,7 +46,7 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(title="Sawazi (a product of Pesara Limited)", version="0.1.0", lifespan=lifespan,
+app = FastAPI(title="Sawazi", version="0.1.0", lifespan=lifespan,
               description="Repayment matching, check-off reconciliation and collections for SACCOs and microfinance institutions.")
 
 _match_locks: dict[int, threading.Lock] = {}
@@ -1891,6 +1891,9 @@ CONSOLE_CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://
                "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; "
                "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 APP_DIR = Path(__file__).parent / "app"
+SITE_DIR = Path(__file__).parent / "site"
+SITE_CSP = ("default-src 'none'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
+            "img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 APP_CSP = CONSOLE_CSP + "; manifest-src 'self'; worker-src 'self'"
 
 
@@ -1912,6 +1915,10 @@ async def console_security_headers(request: Request, call_next):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Cache-Control"] = "no-cache"
+    if request.url.path == "/" or request.url.path.startswith("/site/"):  # public landing page: no scripts at all
+        response.headers["Content-Security-Policy"] = SITE_CSP
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
     if request.url.path.startswith("/m/"):  # a member's own records never stay in any cache
         response.headers["Cache-Control"] = "no-store"
     return response
@@ -1951,7 +1958,8 @@ def healthz(s: Session = Depends(get_session)):
 
 @app.get("/", include_in_schema=False)
 def root():
-    return RedirectResponse("/console/")
+    """The public landing page: what Sawazi is, and where staff and members sign in."""
+    return FileResponse(SITE_DIR / "index.html", media_type="text/html")
 
 
 from .member_api import router as member_router  # noqa: E402  (after the app exists)
@@ -1959,3 +1967,4 @@ from .member_api import router as member_router  # noqa: E402  (after the app ex
 app.include_router(member_router)
 app.mount("/console", StaticFiles(directory=CONSOLE_DIR, html=True), name="console")
 app.mount("/app", StaticFiles(directory=APP_DIR, html=True), name="member_app")
+app.mount("/site", StaticFiles(directory=SITE_DIR), name="site")

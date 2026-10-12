@@ -19,7 +19,7 @@ def test_console_served_with_strict_headers(env):
     assert r.headers["x-content-type-options"] == "nosniff" and r.headers["cache-control"] == "no-store"
     assert c.get("/console/console.js").status_code == 200
     r = c.get("/", follow_redirects=False)
-    assert r.status_code in (302, 307) and r.headers["location"] == "/console/"
+    assert r.status_code == 200 and 'href="/console/"' in r.text  # the landing page links to the console
     assert "content-security-policy" not in c.get("/docs").headers  # API docs unaffected
 
 
@@ -116,3 +116,23 @@ def test_console_script_parses():
         pytest.skip("Node.js not installed")
     r = subprocess.run([node, "--check", str(CONSOLE / "console.js")], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_landing_page_carries_the_company_line_and_the_apps_do_not():
+    """'A product of Pesara Limited' belongs in the landing page footer only, never on an app screen."""
+    from fastapi.testclient import TestClient
+
+    from sawazi.api import app
+
+    c = TestClient(app)
+    r = c.get("/")
+    assert r.status_code == 200 and "text/html" in r.headers["content-type"]
+    footer = r.text.split("<footer>", 1)[1]
+    assert "A product of Pesara Limited" in footer and r.text.count("Pesara") == 1
+    assert 'href="/console/"' in r.text and 'href="/app/"' in r.text
+    csp = r.headers["content-security-policy"]
+    assert "default-src 'none'" in csp and "script" not in csp and "<script" not in r.text
+    assert c.get("/site/site.css").status_code == 200
+    root = Path(__file__).resolve().parent.parent / "sawazi"
+    for f in ["console/console.js", "console/index.html", "app/app.js", "app/index.html", "boardpack.py"]:
+        assert "Pesara Limited" not in (root / f).read_text(encoding="utf-8").replace("PESARA LIMITED", "Pesara Limited"), f
