@@ -354,6 +354,7 @@ def test_a_guarantor_sees_whether_the_loan_is_repaid_but_not_its_figures(signed_
     with Session() as s:
         s.add(Loan(id=90, institution_id=1, member_id=12, loan_no="LN90", principal_cents=50_000_00,
                    balance_cents=30_000_00, installment_cents=2_000_00, arrears_cents=4_000_00, days_in_arrears=35))
+        s.flush()  # the loan first: PostgreSQL checks the guarantee's loan exists
         s.add(CoreGuarantee(institution_id=1, loan_id=90, guarantor_member_id=10, amount_cents=10_000_00,
                             status="active", imported_at=auth.utcnow()))
         s.commit()
