@@ -303,6 +303,8 @@ IMPORTERS = {
     "mpesa": sources.import_mpesa_statement,
     "bank": sources.import_bank_statement,
     "member_balances": sources.import_member_balances,
+    "groups": sources.import_groups,
+    "group_members": sources.import_group_members,
 }
 
 
@@ -2047,9 +2049,11 @@ def root():
     return FileResponse(SITE_DIR / "index.html", media_type="text/html")
 
 
-from .member_api import router as member_router  # noqa: E402  (after the app exists)
+from .groups_api import router as groups_router  # noqa: E402  (after the app exists)
+from .member_api import router as member_router  # noqa: E402
 
 app.include_router(member_router)
+app.include_router(groups_router)
 app.mount("/console", StaticFiles(directory=CONSOLE_DIR, html=True), name="console")
 app.mount("/app", StaticFiles(directory=APP_DIR, html=True), name="member_app")
 app.mount("/site", StaticFiles(directory=SITE_DIR), name="site")

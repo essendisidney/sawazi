@@ -198,6 +198,7 @@ const VIEWS = {
   collections: { label: "Collections", group: "Today", icon: "phone", need: "read", render: viewCollections },
   loans: { label: "Loans", group: "Lending", icon: "cash", need: "read", render: viewLoans },
   products: { label: "Products", group: "Lending", icon: "layers", need: "read", render: viewProducts },
+  groups: { label: "Groups", group: "Lending", icon: "users", need: "read", render: viewGroups },
   risk: { label: "Risk", group: "Oversight", icon: "shield", need: "read", render: viewRisk },
   board: { label: "Board pack", group: "Oversight", icon: "chart", need: "read", render: viewBoard },
   returns: { label: "Returns", group: "Oversight", icon: "file", need: "returns", render: viewReturns },
@@ -221,6 +222,7 @@ const ICONS = {
   split: ["M12 21v-7", "M12 14 6 8V3", "M12 14l6-6V3"],
   key: ["M14 10a4 4 0 1 0-1.2 2.8L21 21", "M17 17l2-2", "M8.5 8.5v.01"],
   menu: ["M4 7h16M4 12h16M4 17h16"],
+  users: ["M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8", "M2 21v-1a6 6 0 0 1 12 0v1", "M16 3.5a4 4 0 0 1 0 7", "M18 21v-1a6 6 0 0 0-3-5.2"],
   out: ["M10 4H5v16h5", "M14 8l4 4-4 4", "M18 12H9"],
 };
 function icon(name) {
@@ -401,7 +403,7 @@ function suspenseItem(e) {
           h("span", { class: "num muted" }, m.member_no)),
         h("button", { type: "button", onclick: (ev) => clearTo(e, m, ev.currentTarget, slot) }, `Clear to ${m.member_no}`)));
     }
-    body.append(memberSearch(e, slot));
+    body.append(memberSearch(e, slot), splitForm(e, slot));
   }
   body.append(slot);
   return h("article", { class: `item sev-${e.severity}` }, h("span", { class: "stripe" }), body);
@@ -616,6 +618,8 @@ const IMPORTS = [
   ["core_guarantees", "Guarantees from the core system", "Loan No, Guarantor Member No, Amount Guaranteed. Tick \"complete list\" to release guarantees no longer in the file."],
   ["member_balances", "Member balances or payroll", "Deposits and share capital (monthly), or gross and net pay from payroll, for existing members."],
   ["loans", "Loans", "Export from the core banking system."],
+  ["groups", "MFI groups", "Group No, Group Name, Meeting Day, Frequency (weekly or fortnightly), Officer Email."],
+  ["group_members", "MFI group members", "Group No, Member No, Role (member, chair, treasurer or secretary)."],
 ];
 
 function viewUpload() {
@@ -1627,6 +1631,196 @@ async function adminAudit() {
     h("div", { class: "tbl-wrap" }, h("table", null,
       h("thead", null, h("tr", null, h("th", null, "When"), h("th", null, "Who"), h("th", null, "What"), h("th", null, "Change"))), list)),
     slot, h("div", null, more));
+}
+
+
+// ------------------------------------------------------------------ MFI groups
+
+const SHEET_STATUS = { draft: "Being filled in", submitted: "Waiting for the bank deposit", banked: "Banked" };
+
+async function viewGroups(arg) {
+  if (arg && /^\d+s\d+$/.test(arg)) { const [g, sh] = arg.split("s"); return viewSheet(Number(g), Number(sh)); }
+  if (arg && /^\d+$/.test(arg)) return viewGroup(Number(arg));
+  const groups = await api(`${inst()}/groups`);
+  const rows = groups.map((g) => h("tr", null,
+    h("td", null, h("a", { href: `#/groups/${g.id}` }, h("b", null, g.name)), h("div", { class: "num muted small" }, g.group_no)),
+    h("td", { class: "small" }, [g.meeting_day, g.frequency].filter(Boolean).join(", ")),
+    h("td", { class: "small" }, g.officer || h("span", { class: "muted" }, "none")),
+    h("td", { class: "n" }, g.members), h("td", { class: "n" }, kes(g.outstanding_kes)),
+    h("td", { class: "n" }, g.arrears_kes ? h("span", { class: "bad" }, kes(g.arrears_kes)) : kes(0)),
+    h("td", { class: "n" }, pct(g.par30_pct)),
+    h("td", { class: "n" }, g.members_behind ? h("span", { class: "pill out-fails" }, g.members_behind) : "0")));
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Groups"),
+      h("p", { class: "muted" }, "Joint-liability groups: members borrow individually and the whole group stands behind every loan. When one member falls behind, every member shares it."))),
+    h("div", { class: "stack" },
+      h("section", { class: "panel" }, groups.length ? h("div", { class: "tbl-wrap" }, h("table", null,
+        h("thead", null, h("tr", null, h("th", null, "Group"), h("th", null, "Meets"), h("th", null, "Officer"), h("th", { class: "n" }, "Members"),
+          h("th", { class: "n" }, "Outstanding"), h("th", { class: "n" }, "Arrears"), h("th", { class: "n" }, "PAR 30"), h("th", { class: "n" }, "Behind"))),
+        h("tbody", null, rows))) : h("div", { class: "empty" }, "No groups yet. Upload a groups file (Upload page) or add one here.")),
+      can("groups") ? newGroupForm() : null),
+  ];
+}
+
+function newGroupForm() {
+  const no = h("input", { type: "text", required: true, maxlength: "40", placeholder: "e.g. UMJ01" });
+  const name = h("input", { type: "text", required: true, maxlength: "200" });
+  const day = h("select", null, h("option", { value: "" }, "Not set"), ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((d) => h("option", { value: d }, d)));
+  const freq = h("select", null, h("option", { value: "weekly" }, "Weekly"), h("option", { value: "fortnightly" }, "Fortnightly"));
+  const officer = h("input", { type: "email", maxlength: "254", placeholder: "loan officer's email (optional)" });
+  const slot = h("div"), save = h("button", { type: "submit", class: "primary" }, "Add group");
+  return h("form", { class: "panel pad stack", onsubmit: (e) => {
+    e.preventDefault();
+    busy(save, slot, async () => {
+      const g = await api(`${inst()}/groups`, { method: "POST", body: { group_no: no.value.trim(), name: name.value.trim(),
+        meeting_day: day.value || null, frequency: freq.value, officer_email: officer.value.trim() || null } });
+      location.hash = `#/groups/${g.id}`;
+    });
+  } }, h("h2", null, "Add a group"),
+    h("div", { class: "row-form" }, h("label", null, "Group number", no), h("label", null, "Name", name)),
+    h("p", { class: "muted small" }, "Members paying for the whole group use the group number as their M-Pesa account."),
+    h("div", { class: "row-form" }, h("label", null, "Meets on", day), h("label", null, "How often", freq)),
+    h("label", null, "Loan officer", officer), slot, save);
+}
+
+async function viewGroup(id) {
+  const g = await api(`${inst()}/groups/${id}`);
+  const kpi = (label, value, sub, bad) => h("div", { class: "kpi" },
+    h("span", { class: "eyebrow" }, label), h("span", { class: bad ? "v bad" : "v" }, value), h("span", { class: "s" }, sub));
+  const members = h("section", { class: "panel" }, h("div", { class: "pad" }, h("h2", null, `Members (${g.members})`)),
+    g.member_list.length ? h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Member"), h("th", null, "Role"), h("th", null, "Loan"),
+        h("th", { class: "n" }, "Balance"), h("th", { class: "n" }, "Instalment"), h("th", { class: "n" }, "Arrears"))),
+      h("tbody", null, g.member_list.flatMap((m) => (m.loans.length ? m.loans : [null]).map((ln, i) => h("tr", null,
+        h("td", null, i === 0 ? [h("b", null, m.name), h("div", { class: "num muted small" }, m.member_no)] : ""),
+        h("td", { class: "small" }, i === 0 && m.role !== "member" ? h("span", { class: "pill" }, m.role) : ""),
+        h("td", { class: "num small" }, ln ? ln.loan_no : h("span", { class: "muted" }, "no loan")),
+        h("td", { class: "n" }, ln ? kes(ln.balance_kes) : ""), h("td", { class: "n" }, ln ? kes(ln.installment_kes) : ""),
+        h("td", { class: "n" }, ln && ln.arrears_kes ? h("span", { class: "bad" }, `${kes(ln.arrears_kes)} · ${ln.days_in_arrears}d`) : ln ? kes(0) : ""))))))) :
+      h("div", { class: "empty" }, "No members yet."));
+  const sheets = h("section", { class: "panel" }, h("div", { class: "pad stack" }, h("h2", null, "Meetings"),
+    g.sheets.length ? h("div", { class: "list" }, g.sheets.map((sh) => h("div", { class: "member" },
+      h("span", null, h("a", { href: `#/groups/${g.id}s${sh.id}` }, when(sh.meeting_on + "T00:00:00")),
+        h("span", { class: "muted small" }, ` · cash ${kes(sh.cash_kes)}`)),
+      h("span", { class: `pill ${sh.status === "banked" ? "app-approved" : sh.status === "submitted" ? "app-submitted" : ""}` }, SHEET_STATUS[sh.status])))) :
+      h("p", { class: "muted small" }, "No meeting sheets yet."),
+    can("groups") ? newSheetForm(g) : null));
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("p", null, h("a", { href: "#/groups" }, "← Groups")),
+      h("h1", null, `${g.name}`), h("p", { class: "muted" }, [g.group_no, g.meeting_day && `meets ${g.meeting_day}`, g.frequency, g.officer && `officer ${g.officer}`].filter(Boolean).join(" · ")))),
+    h("div", { class: "kpis" },
+      kpi("Outstanding", kes(g.outstanding_kes), `${g.loans} loans to ${g.borrowers} members`),
+      kpi("Arrears", kes(g.arrears_kes), `${g.members_behind} ${g.members_behind === 1 ? "member" : "members"} behind`, g.arrears_kes > 0),
+      kpi("PAR 30", pct(g.par30_pct), "of the group's outstanding", g.par30_pct > 0)),
+    g.arrears_kes > 0 ? note("warn", `Joint liability: the whole group stands behind ${kes(g.shared_arrears_kes)} in arrears. Raise it at the next meeting.`) : null,
+    h("div", { class: "grid2" }, h("div", { class: "stack" }, members, can("groups") ? addMemberForm(g) : null), sheets),
+  ];
+}
+
+function addMemberForm(g) {
+  const no = h("input", { type: "text", required: true, maxlength: "40", placeholder: "member number" });
+  const role = h("select", null, ["member", "chair", "treasurer", "secretary"].map((r) => h("option", { value: r }, r[0].toUpperCase() + r.slice(1))));
+  const slot = h("div"), add = h("button", { type: "submit" }, "Add to group");
+  return h("form", { class: "panel pad stack", onsubmit: (e) => {
+    e.preventDefault();
+    busy(add, slot, async () => { await api(`${inst()}/groups/${g.id}/members`, { method: "POST", body: { member_no: no.value.trim(), role: role.value } }); route(); });
+  } }, h("h2", null, "Add a member"), h("div", { class: "row-form" }, h("label", null, "Member number", no), h("label", null, "Role", role), add), slot);
+}
+
+function newSheetForm(g) {
+  const d = h("input", { type: "date", required: true, value: new Date().toISOString().slice(0, 10) });
+  const slot = h("div"), make = h("button", { type: "submit", class: "primary" }, "Start the meeting sheet");
+  return h("form", { class: "stack", onsubmit: (e) => {
+    e.preventDefault();
+    busy(make, slot, async () => {
+      const sh = await api(`${inst()}/groups/${g.id}/sheets`, { method: "POST", body: { meeting_on: d.value } });
+      location.hash = `#/groups/${g.id}s${sh.id}`;
+    });
+  } }, h("label", null, "Meeting date", d), slot, make);
+}
+
+async function viewSheet(gid, sid) {
+  const sh = await api(`${inst()}/groups/${gid}/sheets/${sid}`);
+  const editable = sh.status === "draft" && can("groups");
+  const inputs = {};
+  const rows = sh.lines.map((ln) => {
+    const cash = h("input", { type: "number", min: "0", step: "0.01", value: String(ln.cash_kes), disabled: !editable || null, "aria-label": `Cash from ${ln.name}` });
+    const present = h("input", { type: "checkbox", checked: ln.present || null, disabled: !editable || null, "aria-label": `${ln.name} present` });
+    inputs[ln.member_no] = { cash, present };
+    return h("tr", null, h("td", null, h("b", null, ln.name), h("div", { class: "num muted small" }, [ln.member_no, ln.loan_no].filter(Boolean).join(" · "))),
+      h("td", null, present), h("td", { class: "n" }, kes(ln.due_kes)), h("td", { class: "n" }, kes(ln.mpesa_kes)),
+      h("td", { class: "n" }, editable ? cash : kes(ln.cash_kes)),
+      h("td", { class: "n" }, ln.short_kes ? h("span", { class: "bad" }, kes(ln.short_kes)) : kes(0)));
+  });
+  const slot = h("div");
+  const save = h("button", { type: "button" }, "Save");
+  const lines = () => Object.entries(inputs).map(([member_no, x]) => ({ member_no, cash_kes: x.cash.value || 0, present: x.present.checked }));
+  save.addEventListener("click", () => busy(save, slot, async () => {
+    await api(`${inst()}/groups/${gid}/sheets/${sid}`, { method: "PUT", body: { lines: lines() } }); route();
+  }));
+  const submit = h("button", { type: "button", class: "primary" }, "Close the meeting");
+  submit.addEventListener("click", () => busy(submit, slot, async () => {
+    await api(`${inst()}/groups/${gid}/sheets/${sid}`, { method: "PUT", body: { lines: lines() } });
+    const total = lines().reduce((n, x) => n + Number(x.cash_kes || 0), 0);
+    if (!await confirmDialog("Close this meeting?", h("p", null, `Cash collected: ${kes(total)}. The sheet can no longer be changed, and the cash becomes payments only when the group's bank deposit for it is matched.`), "Close the meeting")) return;
+    await api(`${inst()}/groups/${gid}/sheets/${sid}/submit`, { method: "POST" }); route();
+  }));
+  const deposit = sh.status === "submitted" && can("resolve") ? await depositPanel(gid, sid, sh) : null;
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("p", null, h("a", { href: `#/groups/${gid}` }, `← ${sh.group}`)),
+      h("h1", null, `Meeting of ${when(sh.meeting_on + "T00:00:00")}`)), h("span", { class: "pill" }, SHEET_STATUS[sh.status])),
+    sh.status === "banked" && sh.banked_reference ? note("ok", `Cash banked (${sh.banked_reference}): each member's cash is now a payment to their loan.`) : null,
+    h("section", { class: "panel" }, h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Member"), h("th", null, "Present"), h("th", { class: "n" }, "Due"),
+        h("th", { class: "n" }, "Paid by M-Pesa"), h("th", { class: "n" }, "Cash at meeting"), h("th", { class: "n" }, "Short"))),
+      h("tbody", null, rows,
+        h("tr", null, h("td", null, h("b", null, "Total")), h("td", null, ""), h("td", { class: "n" }, h("b", null, kes(sh.totals.due))),
+          h("td", { class: "n" }, h("b", null, kes(sh.totals.mpesa))), h("td", { class: "n" }, h("b", null, kes(sh.totals.cash))),
+          h("td", { class: "n" }, h("b", null, kes(sh.totals.short))))))),
+      editable ? h("div", { class: "bar" }, h("span", { class: "muted small" }, "M-Pesa payments since the last meeting are filled in. Record the cash, then close the meeting."), h("div", { class: "actions" }, save, submit)) : null),
+    slot, deposit,
+  ];
+}
+
+async function depositPanel(gid, sid, sh) {
+  const found = await api(`${inst()}/groups/${gid}/sheets/${sid}/deposits`);
+  const slot = h("div");
+  return h("section", { class: "panel pad stack" }, h("h2", null, "Match the bank deposit"),
+    h("p", { class: "muted small" }, `Payments of exactly ${kes(sh.totals.cash)} received within a week of the meeting. Choose the treasurer's deposit for this meeting's cash.`),
+    found.length ? h("div", { class: "list" }, found.map((d) => {
+      const b = h("button", { type: "button", class: "primary" }, "This is the deposit");
+      b.addEventListener("click", () => busy(b, slot, async () => {
+        if (!await confirmDialog("Match this deposit?", h("p", null, `${d.reference} on ${when(d.date)} for ${kes(d.kes)}. Each member's cash becomes a payment to their loan, and goes to the core system in the postings file.`), "Match")) return;
+        await api(`${inst()}/groups/${gid}/sheets/${sid}/bank`, { method: "POST", body: { transaction_id: d.transaction_id } }); route();
+      }));
+      return h("div", { class: "member" }, h("span", null, h("b", { class: "num" }, d.reference), " ", h("span", { class: "muted small" }, `${d.source} · ${when(d.date)} · ${d.narrative}`)), b);
+    })) : note("info", "No deposit of that amount yet. Upload the latest bank statement; if the amount differs, find the difference with the treasurer first."),
+    slot);
+}
+
+function splitForm(e, slot) {
+  const rows = h("div", { class: "stack" });
+  const addRow = () => rows.append(h("div", { class: "row-form" },
+    h("input", { type: "text", placeholder: "member number", "aria-label": "Member number", class: "split-no" }),
+    h("input", { type: "number", min: "0.01", step: "0.01", placeholder: "KES", "aria-label": "Amount", class: "split-kes" })));
+  addRow(); addRow();
+  const why = h("input", { type: "text", maxlength: "300", placeholder: "e.g. treasurer paid for three members" });
+  const more = h("button", { type: "button", class: "link", onclick: addRow }, "Add a member");
+  const go = h("button", { type: "submit" }, "Split");
+  return h("details", null, h("summary", { class: "small" }, "Split across several members"),
+    h("form", { class: "stack", onsubmit: (ev) => {
+      ev.preventDefault();
+      busy(go, slot, async () => {
+        const lines = [...rows.children].map((r) => ({ member_no: r.querySelector(".split-no").value.trim(), amount_kes: r.querySelector(".split-kes").value }))
+          .filter((x) => x.member_no && x.amount_kes);
+        const total = lines.reduce((n, x) => n + Number(x.amount_kes), 0);
+        if (Math.round(total * 100) !== Math.round(e.amount_kes * 100)) throw new ApiError(422, `The shares add up to ${kes(total)}; the payment is ${kes(e.amount_kes)}.`);
+        if (!await confirmDialog("Split this payment?", h("p", null, lines.map((x) => `${x.member_no}: ${kes(Number(x.amount_kes))}`).join(" · ")), "Split")) return;
+        await api(`/exceptions/${e.id}/split`, { method: "POST", body: { lines, note: why.value.trim() || "split by staff" } });
+        route();
+      });
+    } }, h("p", { class: "muted small" }, "For one payment that is several members' money. The shares must add up to the payment exactly."),
+      rows, more, h("label", null, "Why", why), go));
 }
 
 // ------------------------------------------------------------------ go

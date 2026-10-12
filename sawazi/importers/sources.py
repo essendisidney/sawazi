@@ -481,6 +481,10 @@ def import_bank_statement(s: Session, institution_id: int, content) -> ImportRes
     res = ImportResult()
     seen = _existing_refs(s, institution_id, "bank")
     occurrence: dict[str, int] = {}  # identical lines in one statement are separate payments
+    given_seen: dict[str, int] = {}
+    stored = {r: (when, amount) for r, when, amount in s.execute(select(
+        Transaction.reference, Transaction.txn_time, Transaction.amount_cents).where(
+        Transaction.institution_id == institution_id, Transaction.source == "bank"))}
     for i, row in enumerate(read_rows(content), start=2):
         problem = amount_problem(row, "credit", "credit_amount", "deposits", "money_in", "paid_in")
         if problem:
@@ -494,15 +498,19 @@ def import_bank_statement(s: Session, institution_id: int, content) -> ImportRes
             res.rejected.append(f"row {i}: unreadable date")
             continue
         narrative = pick(row, "narrative", "description", "details", "particulars")
-        given = pick(row, "reference", "ref", "cheque_no", "transaction_ref")
-        # Banks don't always give a reference, and some reuse one (batch or cheque numbers). The fingerprint
-        # covers the whole line plus how many identical lines came before it in this statement, so two equal
-        # cash deposits on one day are two payments, and re-uploading the statement still adds nothing.
+        given = pick(row, "reference", "ref", "cheque_no", "transaction_ref")[:80]
+        # Keep the bank's own reference when it identifies this line. Banks don't always give one, and some reuse
+        # one (batch or cheque numbers), so a line whose reference repeats in this statement, or was used before
+        # for a different date or amount, gets a fingerprint of the whole line plus how many identical lines came
+        # before it here. Two equal cash deposits on one day are two payments; re-uploading still adds nothing.
         key = f"{given}|{when.isoformat()}|{credit}|{narrative}"
         occurrence[key] = occurrence.get(key, 0) + 1
-        ref = "H" + hashlib.sha1(f"{key}|{occurrence[key]}".encode()).hexdigest()[:16]
-        if given and occurrence[key] == 1 and given in seen:  # a statement uploaded before this change
+        given_seen[given] = given_seen.get(given, 0) + 1
+        earlier = stored.get(given)
+        if given and given_seen[given] == 1 and (earlier is None or earlier == (when, credit)):
             ref = given
+        else:
+            ref = "H" + hashlib.sha1(f"{key}|{occurrence[key]}".encode()).hexdigest()[:16]
         if ref in seen:
             res.skipped_duplicates += 1
             continue
@@ -597,5 +605,88 @@ def import_checkoff_remittance(s: Session, institution_id: int, employer: str, p
             )
         )
         res.created += 1
+    s.commit()
+    return res
+
+
+# ------------------------------------------------------------------ MFI groups
+
+_DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def import_groups(s: Session, institution_id: int, content) -> ImportResult:
+    """Groups: Group No, Group Name, Meeting Day, Frequency (weekly or fortnightly), Officer Email."""
+    from ..models import LendingGroup, StaffUser
+
+    res = ImportResult()
+    existing = {g.group_no: g for g in s.scalars(select(LendingGroup).where(LendingGroup.institution_id == institution_id))}
+    officers = {u.email: u.id for u in s.scalars(select(StaffUser).where(StaffUser.institution_id == institution_id,
+                                                                          StaffUser.is_active.is_(True)))}
+    for i, row in enumerate(read_rows(content), start=2):
+        no = pick(row, "group_no", "group_number", "group_code", "group_id").upper()
+        name = pick(row, "group_name", "name")
+        if not no or not name:
+            res.rejected.append(f"row {i}: missing group number or name")
+            continue
+        long = _too_long(row, group_no=(no, 40), name=(name, 200))
+        day_typed = pick(row, "meeting_day", "day").strip()
+        day = day_typed.lower()
+        freq = (pick(row, "frequency", "meeting_frequency") or "weekly").strip().lower()
+        email = pick(row, "officer_email", "loan_officer_email", "officer").strip().lower()
+        problem = (long or (f"meeting day '{day_typed}' is not a day of the week" if day and day[:3] not in [d[:3] for d in _DAYS] else None)
+                   or (f"frequency '{freq}' should be weekly or fortnightly" if freq not in ("weekly", "fortnightly") else None)
+                   or (f"no active staff member with email {email}" if email and email not in officers else None))
+        if problem:
+            res.rejected.append(f"row {i}: {no} {problem}")
+            continue
+        g = existing.get(no)
+        if g is None:
+            g = LendingGroup(institution_id=institution_id, group_no=no, name=name, status="active",
+                             created_at=datetime.now(timezone.utc).replace(tzinfo=None))
+            s.add(g)
+            existing[no] = g
+            res.created += 1
+        else:
+            res.skipped_duplicates += 1
+        g.name, g.frequency = name, freq
+        g.meeting_day = next((n for n, d in enumerate(_DAYS) if day and d.startswith(day[:3])), g.meeting_day)
+        g.officer_user_id = officers.get(email, g.officer_user_id)
+    s.commit()
+    return res
+
+
+def import_group_members(s: Session, institution_id: int, content) -> ImportResult:
+    """Group membership: Group No, Member No, Role (member, chair, treasurer or secretary). A member is in one
+    active group; a row moving them to another group is refused (they must leave the first one in the console)."""
+    from ..models import GroupMember, LendingGroup
+
+    res = ImportResult()
+    groups = {g.group_no: g for g in s.scalars(select(LendingGroup).where(LendingGroup.institution_id == institution_id))}
+    members = {m.member_no: m for m in s.scalars(select(Member).where(Member.institution_id == institution_id))}
+    current = {gm.member_id: gm for gm in s.scalars(select(GroupMember).where(
+        GroupMember.institution_id == institution_id, GroupMember.left_on.is_(None)))}
+    today = datetime.now(timezone.utc).date()
+    for i, row in enumerate(read_rows(content), start=2):
+        g = groups.get(pick(row, "group_no", "group_number", "group_code", "group_id").upper())
+        m = members.get(pick(row, "member_no", "member_number", "memberno"))
+        role = (pick(row, "role", "position") or "member").strip().lower()
+        if g is None or m is None:
+            res.rejected.append(f"row {i}: unknown group or member")
+            continue
+        if role not in ("member", "chair", "treasurer", "secretary"):
+            res.rejected.append(f"row {i}: {m.member_no} role '{role}' should be member, chair, treasurer or secretary")
+            continue
+        gm = current.get(m.id)
+        if gm and gm.group_id != g.id:
+            res.rejected.append(f"row {i}: {m.member_no} is already in another group; they must leave it first")
+            continue
+        if gm:
+            gm.role = role
+            res.skipped_duplicates += 1
+        else:
+            gm = GroupMember(institution_id=institution_id, group_id=g.id, member_id=m.id, role=role, joined_on=today)
+            s.add(gm)
+            current[m.id] = gm
+            res.created += 1
     s.commit()
     return res

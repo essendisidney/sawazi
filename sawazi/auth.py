@@ -63,10 +63,11 @@ PERMISSIONS: dict[str, set[str]] = {
     "loan_export": {"admin", "accountant"},                        # hand approved loans to the core system
     "board_pack": {"admin", "accountant", "approver"},             # snapshots and the monthly board pack
     "returns": {"admin", "accountant"},                            # SASRA return working papers
+    "groups": {"admin", "credit_officer"},                         # MFI groups, members, meeting sheets
 }
 # A person must do these, never a machine: they move money to a member, message members,
 # or change who has access.
-HUMAN_ONLY = {"resolve", "manage_users", "send_sms", "sms_settings", "allocation_rules", "loan_products",
+HUMAN_ONLY = {"resolve", "manage_users", "send_sms", "sms_settings", "allocation_rules", "loan_products", "groups",
               "loan_apply", "loan_approve"}
 API_KEY_ROLES = ("accountant", "credit_officer", "viewer")
 API_KEY_PREFIX = "swz_"

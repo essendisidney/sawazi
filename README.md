@@ -210,6 +210,22 @@ round. Staff with `manage_users` can switch off a member's app access on every p
 (`POST /institutions/{id}/members/{no}/app-access/revoke`). Member records are never cached on the phone; only the
 app's own files are, so it opens on a weak connection.
 
+## MFI group lending (Phase 4, started)
+
+For microfinance institutions lending through joint-liability groups: members borrow individually and the whole group
+stands behind every loan. The console's **Groups** page (Lending) shows each group's members, loans, arrears and PAR,
+and who shares the liability when a member falls behind.
+
+- **Meeting sheets.** For each meeting the officer starts a sheet: every member's instalment plus anything overdue,
+  with what they already paid by M-Pesa since the last meeting filled in. The officer records the cash paid at the
+  meeting and closes it.
+- **Cash only counts once banked.** When the group's bank deposit arrives, an accountant matches it to the sheet. Only
+  if the amounts agree exactly does each member's cash become a payment to their loan (and go to the core system in the
+  postings file). A shortfall stays with a person to resolve.
+- **Paying for the group.** M-Pesa paid to the group's number goes to suspense; staff split it across the members who
+  paid, with shares that must add up to the payment exactly.
+- Groups and members can be uploaded (Upload page: *MFI groups*, *MFI group members*) or added in the console.
+
 ## Allocation rules
 
 Each institution chooses how a matched payment is split (`GET/PUT /institutions/{id}/allocation-rules`, admin only,
