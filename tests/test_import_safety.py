@@ -146,3 +146,17 @@ def test_unsafe_files_are_refused_whole(acc, monkeypatch):
     monkeypatch.setattr(api, "MAX_UPLOAD_BYTES", 20 * 1_048_576)
     r = up(c, h, "members", "Member No,Name,ID Number\nM9,Too Long Id," + "9" * 30 + "\n")
     assert r.status_code == 200 and "longer than 20" in r.json()["rejected"][0]
+
+
+def test_a_safaricom_reversal_is_raised_for_a_person_once(acc):
+    c, Session, h = acc
+    up(c, h, "mpesa", "Receipt No,Completion Time,Paid In,A/C No,Transaction Status\n"
+                      "QAB1234567,2026-09-05 10:00:00,1500,M1,Completed\n")
+    c.post("/institutions/1/match", headers=h)
+    reversal = ("Receipt No,Completion Time,Paid In,Withdrawn,Details,Transaction Status\n"
+                "QRV7654321,2026-09-06 09:00:00,,1500,Reversal of transaction QAB1234567,Completed\n")
+    up(c, h, "mpesa", reversal)
+    up(c, h, "mpesa", reversal)  # the same statement again raises nothing new
+    with Session() as s:
+        items = s.scalars(select(ExceptionItem).where(ExceptionItem.kind == "mpesa_reversal")).all()
+        assert len(items) == 1 and items[0].severity == "high" and items[0].amount_cents == 150000

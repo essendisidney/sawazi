@@ -365,6 +365,8 @@ def import_mpesa_statement(s: Session, institution_id: int, content) -> ImportRe
             continue
         paid_in = to_cents(pick(row, "paid_in", "amount", "credit"))
         status = pick(row, "transaction_status", "status").lower()
+        if receipt and paid_in <= 0 and "revers" in pick(row, "details").lower():
+            _flag_reversal(s, institution_id, receipt, pick(row, "details"), res)
         if not receipt or paid_in <= 0:
             continue  # outgoing / charge / blank lines
         if status and status not in {"completed", "success", "successful"}:
@@ -404,6 +406,27 @@ def import_mpesa_statement(s: Session, institution_id: int, content) -> ImportRe
         res.created += 1
     s.commit()
     return res
+
+
+def _flag_reversal(s: Session, institution_id: int, receipt: str, details: str, res: ImportResult) -> None:
+    """Safaricom reversed a paybill payment. If Sawazi already holds the original, its allocation must be undone in
+    the core system: raise it once, as high priority, for a person."""
+    for original in re.findall(r"\b[A-Z0-9]{10}\b", details.upper()):
+        t = s.scalar(select(Transaction).where(Transaction.institution_id == institution_id,
+                                               Transaction.source == "mpesa", Transaction.reference == original))
+        if t is None:
+            continue
+        note = f"reversal {receipt}"
+        if s.scalar(select(ExceptionItem.id).where(ExceptionItem.institution_id == institution_id,
+                                                   ExceptionItem.kind == "mpesa_reversal",
+                                                   ExceptionItem.detail.contains(note))):
+            return  # already raised by an earlier upload
+        s.add(ExceptionItem(institution_id=institution_id, kind="mpesa_reversal", severity="high", transaction_id=t.id,
+                            member_id=t.member_id, amount_cents=t.amount_cents,
+                            detail=f"M-Pesa {original} (KES {t.amount_cents / 100:,.2f}) was reversed by Safaricom "
+                                   f"({note}). Undo its allocation in the core system before the next postings file."))
+        res.rejected.append(f"{receipt}: reversal of {original} raised for a person to undo")
+        return
 
 
 def _insert_once(s: Session, txn: Transaction) -> bool:

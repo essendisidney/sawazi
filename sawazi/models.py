@@ -208,9 +208,6 @@ class StaffUser(Base):
     # Set when someone else chose the password (new account, admin reset): the person must pick their own
     # before doing anything else, so nobody else ever knows a working password.
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
-    # Wrong passwords in a row; at LOGIN_ATTEMPTS the account is locked until locked_until (auth.authenticate).
-    failed_logins: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    locked_until: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
 
@@ -514,6 +511,21 @@ class MemberOtp(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     verify_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True)  # set once the code is right
     used_at: Mapped[datetime | None] = mapped_column(DateTime)  # the verify token was used to register a device
+    ip: Mapped[str | None] = mapped_column(String(45), index=True)  # who asked: limits per address
+
+
+class LoginAttempt(Base):
+    """Each staff login attempt (not institution-scoped: an unknown email has no institution). Limits are counted per
+    email and address together, and per address, so nobody can guess a password and nobody elsewhere can lock a
+    named person out (auth.authenticate)."""
+
+    __tablename__ = "login_attempts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(254), index=True)
+    ip: Mapped[str] = mapped_column(String(45), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    ok: Mapped[bool] = mapped_column(Boolean)
 
 
 class MemberCredential(Base):
@@ -527,6 +539,7 @@ class MemberCredential(Base):
     pin_hash: Mapped[str] = mapped_column(String(200))
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime)
+    lockouts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # in a row; see member_api.login
     updated_at: Mapped[datetime] = mapped_column(DateTime)
 
 

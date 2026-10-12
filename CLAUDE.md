@@ -112,6 +112,15 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 - Anything that commits a member's deposits (guarantor acceptance, any channel) goes through
   `guarantors.record_answer`, which locks that member's row first.
 - Sawazi never lends: approved loans leave as a hand-over file; the core system disburses.
+- A figure Sawazi cannot read is never zero: `importers.common.to_cents` raises `BadValue`; importers check amount
+  cells with `amount_problem` and reject the row. A loans file without balance and arrears columns imports nothing.
+- Numbers found only in a narrative are clues, not proof (below 85 unless the name or phone confirms them).
+- Callbacks need the secret URL token AND a caller on the allow-list; an empty list refuses all (`SAWAZI_CALLBACKS_OPEN=1`
+  only for sandboxes). Real-time M-Pesa stays out of the postings file until the statement confirms it.
+- Maker-checker: nobody who created, edited or submitted an application, or whose account one of them set up or reset,
+  may decide on it. Every CSV export goes through `api.csv_safe`.
+- Sign-in limits count per address (staff `login_attempts`, member codes per address and per SACCO), so they can never
+  be used to lock someone else out.
 - After any matching change, run `scripts/run_demo.py` and check the ACCURACY line: `auto_allocated_wrong` must stay 0.
 - Sample data is fictional. Never commit real member data. Real data needs ODPC registration and a data processing agreement first.
 - Secrets (Daraja, Taifa Mobile keys, callback token) go in environment variables / `.env` (gitignored), never in code.

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, Header, HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from .db import get_session
@@ -41,7 +41,9 @@ def client_ip(request) -> str | None:
 ROLES = ("admin", "accountant", "credit_officer", "approver", "viewer")
 SESSION_HOURS = 12
 MIN_PASSWORD_LEN = 10
-LOGIN_ATTEMPTS, LOGIN_LOCK_MINUTES = 5, 15  # wrong passwords in a row, then the account waits
+# Wrong passwords per email from one address, and from one address in all, within the window; then that address
+# waits. Counting per address means nobody elsewhere can lock a named person out.
+LOGIN_ATTEMPTS, IP_ATTEMPTS, LOGIN_WINDOW_MINUTES = 5, 30, 15
 
 # Which roles may do what. Keep this the single source of truth.
 PERMISSIONS: dict[str, set[str]] = {
@@ -112,28 +114,36 @@ def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-class AccountLocked(Exception):
-    def __init__(self, minutes: int):
-        self.minutes = minutes
+def authenticate(s: Session, email: str, password: str, ip: str | None = None) -> tuple[StaffUser | None, bool]:
+    """(user, held_back). The user is None for a wrong email or password, and also while this address has used up
+    its tries; held_back says which, for the audit log only. The caller gives every failure the same answer, so
+    the reply never reveals whether an email exists or is being held back."""
+    from .models import LoginAttempt
 
-
-def authenticate(s: Session, email: str, password: str) -> StaffUser | None:
-    """The user, or None for a wrong email or password. Five wrong passwords in a row lock the account for
-    15 minutes (AccountLocked), so a password cannot be guessed online; an admin resetting it unlocks it."""
-    user = s.scalar(select(StaffUser).where(StaffUser.email == email.strip().lower()).with_for_update())
+    email = email.strip().lower()
+    ip = ip or "unknown"
     now = utcnow()
-    if user and user.locked_until and user.locked_until > now:
-        verify_password(password, _DUMMY_HASH)  # same work either way: no timing hint
-        raise AccountLocked(max(1, int((user.locked_until - now).total_seconds() // 60) + 1))
-    ok = verify_password(password, user.password_hash if user else _DUMMY_HASH)
-    if user and not ok:
-        user.failed_logins = (user.failed_logins or 0) + 1
-        if user.failed_logins >= LOGIN_ATTEMPTS:
-            user.failed_logins, user.locked_until = 0, now + timedelta(minutes=LOGIN_LOCK_MINUTES)
-    if not user or not ok or not user.is_active:
-        return None
-    user.failed_logins, user.locked_until = 0, None
-    return user
+    since = now - timedelta(minutes=LOGIN_WINDOW_MINUTES)
+    fails = select(func.count()).select_from(LoginAttempt).where(LoginAttempt.ip == ip, LoginAttempt.ok.is_(False),
+                                                                  LoginAttempt.at > since)
+    held = (s.scalar(fails.where(LoginAttempt.email == email)) >= LOGIN_ATTEMPTS
+            or s.scalar(fails) >= IP_ATTEMPTS)
+    user = s.scalar(select(StaffUser).where(StaffUser.email == email))
+    ok = verify_password(password, user.password_hash if user and not held else _DUMMY_HASH) and not held
+    ok = ok and user is not None and user.is_active
+    s.add(LoginAttempt(email=email[:254], ip=ip[:45], at=now, ok=ok))
+    if ok:  # a good login wipes this address's misses for the account
+        s.execute(delete(LoginAttempt).where(LoginAttempt.email == email, LoginAttempt.ip == ip,
+                                             LoginAttempt.ok.is_(False)))
+    s.execute(delete(LoginAttempt).where(LoginAttempt.at < now - timedelta(days=7)))  # keep the table small
+    return (user if ok else None), held
+
+
+def forget_failed_logins(s: Session, email: str) -> None:
+    """An admin reset gives the person a clean start from every address."""
+    from .models import LoginAttempt
+
+    s.execute(delete(LoginAttempt).where(LoginAttempt.email == email.strip().lower(), LoginAttempt.ok.is_(False)))
 
 
 def issue_session(s: Session, user: StaffUser) -> tuple[str, datetime]:

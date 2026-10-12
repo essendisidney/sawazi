@@ -40,3 +40,10 @@ def _dispose_engines():
     yield
     while _engines:
         _engines.pop().dispose()
+
+
+@pytest.fixture(autouse=True)
+def _callbacks_open_unless_a_test_sets_an_allow_list(monkeypatch):
+    """Tests are a sandbox: callbacks without an allow-list are let in. Production refuses them
+    (tests/test_hardening.py checks that)."""
+    monkeypatch.setenv("SAWAZI_CALLBACKS_OPEN", "1")

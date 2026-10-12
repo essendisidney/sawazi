@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -34,12 +34,15 @@ router = APIRouter(tags=["member app"])
 
 TOKEN_PREFIX = "mbr_"
 OTP_MINUTES, OTP_ATTEMPTS, OTP_PER_HOUR = 10, 5, 3
-# Sign-in codes sent across all members per day. Each phone is already limited; this stops a bot cycling through
-# members' numbers from running up the SMS bill. Raise it with SAWAZI_OTP_DAILY_CAP as membership grows.
+# Each phone is limited (OTP_PER_HOUR). Beyond that, codes asked for from one address per hour, and codes sent to
+# one SACCO's members per day, are limited too: a bot cycling through members' numbers cannot run up the SMS bill,
+# and cannot stop another SACCO's members signing in. Raise the daily figure with SAWAZI_OTP_DAILY_CAP.
+OTP_PER_IP_HOUR = 10
 OTP_DAILY_CAP = int(os.getenv("SAWAZI_OTP_DAILY_CAP", "500"))
 VERIFY_MINUTES = 10
 SESSION_MINUTES = 30
 PIN_ATTEMPTS, PIN_LOCK_MINUTES = 5, 15
+PIN_LOCKOUTS_BEFORE_SIGN_OUT = 3  # lock-outs in a row; then the phone is signed out and needs an SMS code
 
 
 def _hash(value: str) -> str:
@@ -171,39 +174,55 @@ def _memberships(s: Session, phone: str) -> list[Member]:
 
 
 @router.post("/m/otp")
-def send_otp(body: OtpIn, s: Session = Depends(get_session), provider=Depends(sms.get_provider)):
+def send_otp(body: OtpIn, request: Request, background: BackgroundTasks, s: Session = Depends(get_session),
+             provider=Depends(sms.get_provider)):
     """Text a one-time code. Always the same answer, whether or not the number is registered, so the app never
-    reveals who is a member. Unregistered numbers get no SMS (no cost, no spam)."""
+    reveals who is a member. Unregistered numbers get no SMS (no cost, no spam), and the SMS itself goes out after
+    the reply, so the reply takes no longer for a member than for anyone else."""
     phone = norm_phone(body.phone)
     if not phone:
         raise HTTPException(422, "Enter a Kenyan mobile number, e.g. 0712 345 678.")
+    ip = auth.client_ip(request) or "unknown"
+    now = utcnow()
     members = _memberships(s, phone)
-    recent = s.scalar(select(func.count()).select_from(MemberOtp).where(
-        MemberOtp.phone == phone, MemberOtp.created_at > utcnow() - timedelta(hours=1)))
-    today = s.scalar(select(func.count()).select_from(MemberOtp).where(
-        MemberOtp.created_at > utcnow() - timedelta(hours=24)))
-    if members and recent < OTP_PER_HOUR and today >= OTP_DAILY_CAP:
-        logging.getLogger("sawazi").warning("member sign-in SMS stopped: %s codes in 24 h (cap %s)", today, OTP_DAILY_CAP)
-    elif members and recent < OTP_PER_HOUR:
-        code = f"{secrets.randbelow(10 ** 6):06d}"
-        now = utcnow()
-        s.add(MemberOtp(phone=phone, code_hash=_hash(f"{phone}:{code}"), created_at=now,
-                        expires_at=now + timedelta(minutes=OTP_MINUTES)))
-        s.commit()
+    count = select(func.count()).select_from(MemberOtp)
+    by_phone = s.scalar(count.where(MemberOtp.phone == phone, MemberOtp.created_at > now - timedelta(hours=1)))
+    by_ip = s.scalar(count.where(MemberOtp.ip == ip, MemberOtp.created_at > now - timedelta(hours=1)))
+    if members and by_phone < OTP_PER_HOUR and by_ip < OTP_PER_IP_HOUR:
         first = members[0]
-        settings = s.scalar(select(SmsSettings).where(SmsSettings.institution_id == first.institution_id))
+        sacco_today = s.scalar(count.where(MemberOtp.created_at > now - timedelta(hours=24), MemberOtp.phone.in_(
+            select(Member.phone).where(Member.institution_id == first.institution_id))))
+        if sacco_today >= OTP_DAILY_CAP:
+            logging.getLogger("sawazi").warning("sign-in SMS for institution %s stopped: %s codes in 24 h (cap %s)",
+                                                first.institution_id, sacco_today, OTP_DAILY_CAP)
+        else:
+            code = f"{secrets.randbelow(10 ** 6):06d}"
+            s.add(MemberOtp(phone=phone, code_hash=_hash(f"{phone}:{code}"), created_at=now, ip=ip[:45],
+                            expires_at=now + timedelta(minutes=OTP_MINUTES)))
+            s.commit()
+            background.add_task(_send_code, s.get_bind(), provider, first.institution_id, first.id, phone, code)
+    elif members:
+        logging.getLogger("sawazi").info("sign-in code not sent: limit reached (phone or address %s)", ip)
+    return {"sent": True, "message": "If this number is registered with a SACCO on Sawazi, a code is on its way."}
+
+
+def _send_code(bind, provider, institution_id: int, member_id: int, phone: str, code: str) -> None:
+    """After the reply: send the code and keep a copy of the SMS with the code blanked out."""
+    now = utcnow()
+    with Session(bind=bind) as s:
+        settings = s.scalar(select(SmsSettings).where(SmsSettings.institution_id == institution_id))
         text = (f"Sawazi: your sign-in code is {code}. It works for {OTP_MINUTES} minutes. "
                 "Never share it, not even with SACCO staff.")
         try:
             res = provider.send(phone, text, settings.service_name if settings else None)
-            s.add(SmsMessage(institution_id=first.institution_id, member_id=first.id, phone=phone,
+            s.add(SmsMessage(institution_id=institution_id, member_id=member_id, phone=phone,
                              body=text.replace(code, "######"), provider=provider.name, status=res.status,
                              provider_message_id=res.provider_message_id, approved_by_user_id=None,
                              approved_at=now, sent_at=now if res.status != "failed" else None))
             s.commit()
         except Exception:  # the member can ask again; nothing else depends on this SMS
             s.rollback()
-    return {"sent": True, "message": "If this number is registered with a SACCO on Sawazi, a code is on its way."}
+            logging.getLogger("sawazi").exception("sign-in SMS to a member failed")
 
 
 @router.post("/m/otp/verify")
@@ -247,13 +266,21 @@ def register_device(body: DeviceIn, request: Request, s: Session = Depends(get_s
         cred = MemberCredential(institution_id=member.institution_id, member_id=member.id)
         s.add(cred)
     cred.pin_hash, cred.failed_attempts, cred.locked_until, cred.updated_at = auth.hash_password(body.pin), 0, None, now
+    cred.lockouts = 0
+    # Only the phone that just proved the SMS code stays signed in: a lost or stolen phone is cut off the moment
+    # the member sets up their new one (or resets a forgotten PIN).
+    others = s.execute(update(MemberDevice).where(MemberDevice.member_id == member.id, MemberDevice.revoked_at.is_(None))
+                       .values(revoked_at=now)).rowcount
+    s.execute(update(MemberSession).where(MemberSession.member_id == member.id, MemberSession.revoked_at.is_(None))
+              .values(revoked_at=now))
     device_token = TOKEN_PREFIX + secrets.token_urlsafe(32)
     device = MemberDevice(institution_id=member.institution_id, member_id=member.id, token_hash=_hash(device_token),
                           label=(body.label or request.headers.get("user-agent", ""))[:100], created_at=now)
     s.add(device)
     s.flush()
     who = Principal("member", member.id, member.institution_id, "", member.name)
-    audit.record(s, who, "member_app.device_added", "member_device", device.id, after={"label": device.label},
+    audit.record(s, who, "member_app.device_added", "member_device", device.id,
+                 after={"label": device.label, "other_phones_signed_out": others},
                  ip=auth.client_ip(request))
     session = _new_session(s, member, device)
     s.commit()
@@ -279,10 +306,15 @@ def login(body: LoginIn, s: Session = Depends(get_session)):
         left = PIN_ATTEMPTS - cred.failed_attempts
         if left <= 0:
             cred.failed_attempts, cred.locked_until = 0, now + timedelta(minutes=PIN_LOCK_MINUTES)
+            cred.lockouts = (cred.lockouts or 0) + 1
+            if cred.lockouts >= PIN_LOCKOUTS_BEFORE_SIGN_OUT:  # 15 wrong PINs: this phone must prove itself by SMS
+                device.revoked_at = now
+                s.commit()
+                raise HTTPException(401, "This phone is not set up. Sign in with an SMS code.")
         s.commit()
         raise HTTPException(401, f"Wrong PIN. {left} tries left." if left > 0 else
                             f"Too many wrong PINs. Try again in {PIN_LOCK_MINUTES} minutes.")
-    cred.failed_attempts, cred.locked_until = 0, None
+    cred.failed_attempts, cred.locked_until, cred.lockouts = 0, None, 0
     member = s.get(Member, device.member_id)
     token = _new_session(s, member, device)
     s.commit()
