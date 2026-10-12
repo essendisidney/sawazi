@@ -9,16 +9,19 @@ reach a staff endpoint, and a staff token can never reach these. Every query is 
 """
 from __future__ import annotations
 
+import csv
 import hashlib
 import hmac
+import io
 import logging
 import os
 import secrets
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -90,6 +93,8 @@ SWAHILI: list[tuple[str, str]] = [
     (r"product not found", "Aina hiyo ya mkopo haikupatikana."),
     (r"You already have applications being looked at\. Please wait for those first\.",
      "Una maombi ambayo bado yanaangaliwa. Tafadhali subiri hayo kwanza."),
+    (r"That is not one of your active loans\.", "Huo si mmoja wa mikopo yako inayoendelea."),
+    (r"Choose up to 12 months\.", "Chagua hadi miezi 12."),
     (r"(\S+) is not another member of your SACCO\. Check the member number\.",
      r"\1 si mwanachama mwingine wa SACCO yako. Angalia nambari ya uanachama."),
 ]
@@ -423,6 +428,17 @@ def _short_name(mem: Member | None) -> str:
     return f"{parts[0]} {parts[-1][0]}." if len(parts) > 1 else parts[0]
 
 
+def _loan_state(loan) -> str:
+    """What a guarantor may know about the loan they back: whether it is being repaid. Never its figures."""
+    if loan is None:
+        return "not_paid_out"
+    if loan.status == "written_off":
+        return "written_off"
+    if loan.status == "closed":
+        return "repaid"
+    return "behind" if loan.days_in_arrears > 0 else "up_to_date"
+
+
 @router.get("/m/guarantees")
 def my_guarantees(me: SignedIn = Depends(current_member), s: Session = Depends(get_session)):
     """Requests waiting for this member, what they guarantee for others, and who guarantees their loans."""
@@ -441,12 +457,13 @@ def my_guarantees(me: SignedIn = Depends(current_member), s: Session = Depends(g
         if st == "requested" and a.status in guarantors.OPEN_APPLICATION:
             waiting.append(row)
         elif st == "accepted":
-            giving.append(row | {"source": "sawazi"})
+            loan = s.get(Loan, a.disbursed_loan_id) if a.disbursed_loan_id else None
+            giving.append(row | {"source": "sawazi", "loan_state": _loan_state(loan)})
     for cg, ln in s.execute(select(CoreGuarantee, Loan).join(Loan, CoreGuarantee.loan_id == Loan.id).where(
             CoreGuarantee.institution_id == m.institution_id, CoreGuarantee.guarantor_member_id == m.id,
             CoreGuarantee.status == "active", guarantors.core_counts())):
         giving.append({"id": None, "for": _short_name(s.get(Member, ln.member_id)), "kes": cg.amount_cents / 100,
-                       "loan_no": ln.loan_no, "status": "accepted", "source": "core"})
+                       "loan_no": ln.loan_no, "status": "accepted", "source": "core", "loan_state": _loan_state(ln)})
     mine = []
     my_loans = {ln.id: ln for ln in s.scalars(select(Loan).where(Loan.institution_id == m.institution_id,
                                                                  Loan.member_id == m.id, Loan.status == "active"))}
@@ -501,6 +518,7 @@ class CheckIn(BaseModel):
 class ApplyIn(CheckIn):
     purpose: str | None = Field(default=None, max_length=300)
     guarantors: list[str] = Field(default_factory=list, max_length=6)
+    top_up_loan_no: str | None = Field(default=None, max_length=40)  # top up this loan of mine instead of a new one
 
 
 MAX_OPEN_APPLICATIONS = 2
@@ -551,6 +569,43 @@ def loan_check(body: CheckIn, me: SignedIn = Depends(current_member), s: Session
                        if c.code != "guarantors"]}
 
 
+@router.get("/m/statement.csv")
+def statement(start: date, end: date, me: SignedIn = Depends(current_member), s: Session = Depends(get_session)):
+    """The member's own payments in a period (up to 12 months) and how each was split, as a CSV to keep or share.
+    The SACCO's core system remains the official statement; this shows what Sawazi matched."""
+    from .api import csv_safe
+    from .models import Allocation, Loan, Transaction
+
+    if end < start or (end - start).days > 366:
+        raise HTTPException(422, "Choose up to 12 months.")
+    m = me.member
+    pays = list(s.scalars(select(Transaction).where(
+        Transaction.institution_id == m.institution_id, Transaction.member_id == m.id, Transaction.status == "allocated",
+        Transaction.txn_time >= datetime.combine(start, datetime.min.time()),
+        Transaction.txn_time < datetime.combine(end + timedelta(days=1), datetime.min.time())).order_by(Transaction.txn_time)))
+    loans = {ln.id: ln.loan_no for ln in s.scalars(select(Loan).where(Loan.institution_id == m.institution_id,
+                                                                      Loan.member_id == m.id))}
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["date", "paid_by", "reference", "amount", "went_to", "loan_no", "part"])
+    total = 0
+    for t in pays:
+        parts = s.scalars(select(Allocation).where(Allocation.institution_id == m.institution_id,
+                                                   Allocation.transaction_id == t.id)).all()
+        for a in parts or [None]:
+            w.writerow(csv_safe([t.txn_time.strftime("%Y-%m-%d %H:%M"), t.source, t.reference, f"{t.amount_cents / 100:.2f}",
+                                 a.target if a else "", loans.get(a.loan_id, "") if a else "",
+                                 f"{a.amount_cents / 100:.2f}" if a else ""]))
+        total += t.amount_cents
+    w.writerow([])
+    w.writerow(csv_safe([f"{len(pays)} payments, KES {total / 100:,.2f}, {start} to {end}. "
+                         f"{m.member_no} {m.name}. Your SACCO's statement is the official record."]))
+    audit.record(s, me.principal, "member_app.statement", "member", m.id, after={"start": str(start), "end": str(end)})
+    s.commit()
+    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv", headers={
+        "Content-Disposition": f'attachment; filename="sawazi-statement-{m.member_no}-{start}-{end}.csv"'})
+
+
 @router.get("/m/applications")
 def my_applications(me: SignedIn = Depends(current_member), s: Session = Depends(get_session)):
     from .models import LoanApplication, LoanProduct
@@ -575,6 +630,14 @@ def apply(body: ApplyIn, me: SignedIn = Depends(current_member), s: Session = De
         LoanApplication.status.in_(("draft", "submitted"))))
     if open_count >= MAX_OPEN_APPLICATIONS:
         raise HTTPException(409, "You already have applications being looked at. Please wait for those first.")
+    top_up = None
+    if body.top_up_loan_no:
+        from .models import Loan
+
+        top_up = s.scalar(select(Loan).where(Loan.institution_id == m.institution_id, Loan.member_id == m.id,
+                                             Loan.loan_no == body.top_up_loan_no.strip(), Loan.status == "active"))
+        if top_up is None:
+            raise HTTPException(422, "That is not one of your active loans.")
     nominated = []
     for no in dict.fromkeys(x.strip().upper() for x in body.guarantors if x.strip()):
         g = s.scalar(select(Member).where(Member.institution_id == m.institution_id, Member.member_no == no))
@@ -584,12 +647,13 @@ def apply(body: ApplyIn, me: SignedIn = Depends(current_member), s: Session = De
     a = LoanApplication(institution_id=m.institution_id, member_id=m.id, product_id=p.id,
                         amount_cents=int(body.amount_kes * 100), term_months=body.term_months, purpose=body.purpose,
                         status="draft", source="member_app", nominated_guarantors=nominated,
-                        prepared_by_user_id=None, created_at=utcnow())
+                        prepared_by_user_id=None, created_at=utcnow(), top_up_loan_id=top_up.id if top_up else None)
     s.add(a)
     s.flush()
     audit.record(s, me.principal, "loan_application.create", "loan_application", a.id,
                  after={"source": "member_app", "product": p.code, "amount_cents": a.amount_cents,
-                        "term_months": a.term_months, "nominated_guarantors": nominated})
+                        "term_months": a.term_months, "nominated_guarantors": nominated,
+                        "top_up_of": top_up.loan_no if top_up else None})
     s.commit()
     return {"ref": f"SWZ-{a.id}", "status": "draft",
             "message": "Sent. A credit officer will check it and contact your guarantors."}

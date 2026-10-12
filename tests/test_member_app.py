@@ -329,3 +329,50 @@ def test_every_member_message_has_kiswahili(members):
     assert en.json()["detail"] == "This phone is not set up. Sign in with an SMS code."
     staff = c.get("/institutions/1/dashboard", headers={"Accept-Language": "sw"})  # staff messages stay English
     assert staff.status_code == 401 and "Ingia" not in staff.text
+
+
+# ---------------------------------------------------------------- round two: statement, guarantor view, top-ups
+
+def test_statement_has_only_my_payments_in_the_period(signed_in):
+    c, Session, phone, me = signed_in
+    r = c.get("/m/statement.csv", headers=me, params={"start": "2026-09-01", "end": "2026-09-30"})
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
+    assert "attachment" in r.headers["content-disposition"] and r.headers["cache-control"] == "no-store"
+    lines = r.text.strip().splitlines()
+    assert lines[0].startswith("date,paid_by,reference,amount,went_to")
+    assert "Someone" not in r.text and "official record" in lines[-1]
+    assert c.get("/m/statement.csv", headers=me, params={"start": "2025-01-01", "end": "2026-09-30"}).status_code == 422
+    assert c.get("/m/statement.csv", params={"start": "2026-09-01", "end": "2026-09-30"}).status_code == 401
+    with Session() as s:
+        assert s.scalar(select(AuditEvent).where(AuditEvent.action == "member_app.statement")) is not None
+
+
+def test_a_guarantor_sees_whether_the_loan_is_repaid_but_not_its_figures(signed_in):
+    from sawazi.models import CoreGuarantee
+
+    c, Session, phone, me = signed_in
+    with Session() as s:
+        s.add(Loan(id=90, institution_id=1, member_id=12, loan_no="LN90", principal_cents=50_000_00,
+                   balance_cents=30_000_00, installment_cents=2_000_00, arrears_cents=4_000_00, days_in_arrears=35))
+        s.add(CoreGuarantee(institution_id=1, loan_id=90, guarantor_member_id=10, amount_cents=10_000_00,
+                            status="active", imported_at=auth.utcnow()))
+        s.commit()
+    g = c.get("/m/guarantees", headers=me).json()
+    row = next(r for r in g["giving"] if r.get("loan_no") == "LN90")
+    assert row["loan_state"] == "behind" and "arrears_kes" not in row and "balance_kes" not in row
+
+
+def test_a_member_can_ask_to_top_up_their_own_active_loan_only(signed_in):
+    c, Session, phone, me = signed_in
+    pid = c.post("/institutions/1/loan-products", headers=login(c, "admin@a.test"), json=PRODUCT).json()["id"]
+    with Session() as s:
+        my_loan = s.scalar(select(Loan.loan_no).where(Loan.member_id == 10, Loan.status == "active"))
+    body = {"product_id": pid, "amount_kes": 50_000, "term_months": 12}
+    assert c.post("/m/applications", headers=me, json={**body, "top_up_loan_no": "LN-NOT-MINE"}).status_code == 422
+    sw = c.post("/m/applications", headers={**me, "Accept-Language": "sw"}, json={**body, "top_up_loan_no": "LN-NOT-MINE"})
+    assert sw.json()["detail"] == "Huo si mmoja wa mikopo yako inayoendelea."
+    r = c.post("/m/applications", headers=me, json={**body, "top_up_loan_no": my_loan})
+    assert r.status_code == 200
+    app_id = int(r.json()["ref"].split("-")[1])
+    staff = c.get(f"/institutions/1/loan-applications/{app_id}", headers=login(c, "credit_officer@a.test")).json()
+    assert staff["top_up_of"] == my_loan and staff["source"] == "member_app"

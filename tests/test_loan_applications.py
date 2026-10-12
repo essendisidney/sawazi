@@ -115,7 +115,7 @@ def test_failed_checks_need_a_written_override(world):
     a = decide(c, a["id"], override_reason="Transferred from Tumaini SACCO with 8 years' history").json()
     assert a["status"] == "approved" and "Tumaini" in a["override_reason"]
     rows = c.post("/institutions/1/loan-applications/export.csv", headers=login(c, "accountant@a.test")).text
-    assert rows.strip().endswith(",yes")
+    assert rows.strip().endswith(",yes,")  # with exceptions; not a top-up
 
 
 @pytest.mark.parametrize("who", ["viewer@a.test", "accountant@a.test"])

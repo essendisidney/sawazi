@@ -965,7 +965,10 @@ async function viewApplication(id) {
     h("span", { class: `pill app-${a.status}` }, APP_STATUS[a.status] || a.status));
   const left = h("div", { class: "stack" }, appraisalPanel(a.appraisal), guarantorPanel(a, gs, open));
   const right = h("div", { class: "stack" }, actionPanel(a), historyPanel(a));
-  return [head, a.override_reason ? note("warn", `Approved with exceptions: ${a.override_reason}`) : null, h("div", { class: "grid2" }, left, right)];
+  const fromApp = a.source === "member_app" ? note("info", "Sent by the member from the member app" +
+    (a.nominated_guarantors.length ? `. Guarantors they named: ${a.nominated_guarantors.join(", ")}. Ask them below.` : ". No guarantors named yet.")) : null;
+  const topUp = a.top_up_of ? note("info", `Top-up of loan ${a.top_up_of}: the core system adds this amount to that loan.`) : null;
+  return [head, fromApp, topUp, a.override_reason ? note("warn", `Approved with exceptions: ${a.override_reason}`) : null, h("div", { class: "grid2" }, left, right)];
 }
 
 function guarantorPanel(a, gs, open) {
