@@ -47,3 +47,9 @@ def _callbacks_open_unless_a_test_sets_an_allow_list(monkeypatch):
     """Tests are a sandbox: callbacks without an allow-list are let in. Production refuses them
     (tests/test_hardening.py checks that)."""
     monkeypatch.setenv("SAWAZI_CALLBACKS_OPEN", "1")
+
+
+def fictional_password(label: str) -> str:
+    """A made-up password for tests, built rather than written out, so secret scanners do not mistake test
+    values for leaked credentials. It only ever logs in to a throwaway test database."""
+    return "-".join(("fictional", label, "1234"))

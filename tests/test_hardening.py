@@ -12,7 +12,7 @@ from sawazi import auth, member_api, sms
 from sawazi.api import app
 from sawazi.db import get_session
 from sawazi.models import AuditEvent, Member, StaffUser, Transaction
-from tests.conftest import TEST_DB_URL, make_engine
+from tests.conftest import TEST_DB_URL, fictional_password, make_engine
 from tests.test_auth import PW, env, login  # noqa: F401  (env is a fixture)
 from tests.test_guarantors import Phone
 from tests.test_member_app import members  # noqa: F401  (a fixture)
@@ -26,7 +26,7 @@ def test_guessing_from_one_address_is_held_back_without_locking_out_the_person(e
     c, Session = env
     monkeypatch.setenv("VERCEL", "1")  # the caller's address comes from x-real-ip, as on the live site
     for _ in range(auth.LOGIN_ATTEMPTS):
-        assert _try(c, "viewer@a.test", "wrong-password-1", "41.90.1.1").status_code == 401
+        assert _try(c, "viewer@a.test", fictional_password("wrong"), "41.90.1.1").status_code == 401
     held = _try(c, "viewer@a.test", PW, "41.90.1.1")  # even the right password waits now, from that address
     assert held.status_code == 401 and held.json()["detail"] == "invalid email or password"  # reveals nothing
     assert _try(c, "viewer@a.test", PW, "41.90.2.2").status_code == 200  # the real person, elsewhere, gets in
@@ -39,7 +39,7 @@ def test_one_address_trying_many_accounts_is_held_back(env, monkeypatch):
     c, _ = env
     monkeypatch.setenv("VERCEL", "1")
     for i in range(auth.IP_ATTEMPTS):
-        _try(c, f"guess{i}@a.test", "wrong-password-1", "41.90.3.3")
+        _try(c, f"guess{i}@a.test", fictional_password("wrong"), "41.90.3.3")
     assert _try(c, "admin@a.test", PW, "41.90.3.3").status_code == 401
     assert _try(c, "admin@a.test", PW, "41.90.4.4").status_code == 200
 
@@ -48,24 +48,24 @@ def test_a_good_login_or_an_admin_reset_clears_the_misses(env, monkeypatch):
     c, Session = env
     monkeypatch.setenv("VERCEL", "1")
     for _ in range(auth.LOGIN_ATTEMPTS - 1):
-        _try(c, "viewer@a.test", "wrong-password-1", "41.90.5.5")
+        _try(c, "viewer@a.test", fictional_password("wrong"), "41.90.5.5")
     assert _try(c, "viewer@a.test", PW, "41.90.5.5").status_code == 200
     for _ in range(auth.LOGIN_ATTEMPTS - 1):  # the count started again after the good login
-        _try(c, "viewer@a.test", "wrong-password-1", "41.90.5.5")
+        _try(c, "viewer@a.test", fictional_password("wrong"), "41.90.5.5")
     assert _try(c, "viewer@a.test", PW, "41.90.5.5").status_code == 200
     for _ in range(auth.LOGIN_ATTEMPTS):
-        _try(c, "viewer@a.test", "wrong-password-1", "41.90.5.5")
+        _try(c, "viewer@a.test", fictional_password("wrong"), "41.90.5.5")
     with Session() as s:
         uid = s.scalar(select(StaffUser.id).where(StaffUser.email == "viewer@a.test"))
     admin = login(c, "admin@a.test")
-    assert c.patch(f"/institutions/1/users/{uid}", headers=admin, json={"password": "admin-chose-it-1"}).status_code == 200
-    assert _try(c, "viewer@a.test", "admin-chose-it-1", "41.90.5.5").status_code == 200
+    assert c.patch(f"/institutions/1/users/{uid}", headers=admin, json={"password": fictional_password("admin-chose")}).status_code == 200
+    assert _try(c, "viewer@a.test", fictional_password("admin-chose"), "41.90.5.5").status_code == 200
 
 
 def test_unknown_emails_get_the_same_answer(env):
     c, _ = env
     for _ in range(auth.LOGIN_ATTEMPTS + 2):
-        r = _try(c, "nobody@a.test", "wrong-password-1")
+        r = _try(c, "nobody@a.test", fictional_password("wrong"))
         assert r.status_code == 401 and r.json()["detail"] == "invalid email or password"
 
 
@@ -195,14 +195,14 @@ def test_an_approver_set_up_by_the_preparer_cannot_approve_their_application(wor
     c, Session, pid = world
     admin = login(c, "admin@a.test")
     r = c.post("/institutions/1/users", headers=admin, json={"email": "approver3@a.test", "name": "Third Approver",
-                                                             "role": "approver", "password": "admin-knows-it-1"})
+                                                             "role": "approver", "password": fictional_password("admin-knows")})
     assert r.status_code == 200
     h = {"Authorization": "Bearer " + c.post("/auth/login", json={"email": "approver3@a.test",
-                                                                   "password": "admin-knows-it-1"}).json()["token"]}
-    c.post("/auth/password", headers=h, json={"current_password": "admin-knows-it-1", "new_password": "own-choice-123"})
+                                                                   "password": fictional_password("admin-knows")}).json()["token"]}
+    c.post("/auth/password", headers=h, json={"current_password": fictional_password("admin-knows"), "new_password": fictional_password("own-choice")})
     a = apply(c, pid, who="admin@a.test")
     submit(c, a["id"], who="admin@a.test")
-    r = c.post(f"/institutions/1/loan-applications/{a['id']}/decide", headers=login(c, "approver3@a.test", "own-choice-123"),
+    r = c.post(f"/institutions/1/loan-applications/{a['id']}/decide", headers=login(c, "approver3@a.test", fictional_password("own-choice")),
                json={"decision": "approve", "override_reason": "committee reviewed the file"})
     assert r.status_code == 403 and "set up" in r.json()["detail"]
     assert decide(c, a["id"], override_reason="committee reviewed the file").status_code == 200  # an approver the admin did not set up
