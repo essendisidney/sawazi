@@ -45,7 +45,8 @@ const KIND = {
   large_payment: "Unusually large payment", c2b_mismatch: "M-Pesa callback disagrees with statement",
 };
 const kindLabel = (k) => KIND[k] || k.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
-const CHANNEL = { sms: "SMS", call: "Call", guarantor_notice: "Guarantor notice", field_visit: "Field visit", recovery: "Recovery" };
+const CHANNEL = { sms: "SMS", call: "Call", guarantor_notice: "Guarantor notice", field_visit: "Field visit", recovery: "Recovery",
+  group_meeting: "Group meeting" };
 
 class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -1249,6 +1250,12 @@ async function viewRisk() {
     h("div", { class: "grid2" }, classTable, topGuarantors),
     h("div", { class: "grid2" }, parTable("PAR by product", r.par_by_product), parTable("PAR by employer", r.par_by_employer)),
     topBorrowers,
+    r.groups ? table(`Groups: ${r.groups.groups_behind} of ${r.groups.groups} have members behind (PAR 30 ${pct(r.groups.par30_pct)})`,
+      [["Group"], ["Members", 1], ["Behind", 1], ["Arrears the group stands behind", 1], ["PAR 30", 1]],
+      r.groups.behind.length ? r.groups.behind.map((b) => h("tr", null,
+        h("td", null, h("a", { href: "#/groups" }, b.name), " ", h("span", { class: "num muted" }, b.group_no)),
+        h("td", { class: "n" }, b.members), h("td", { class: "n" }, b.members_behind), h("td", { class: "n" }, kes(b.arrears_kes)),
+        h("td", { class: "n" }, pct(b.par30_pct)))) : [h("tr", null, h("td", { colspan: "5", class: "muted" }, "No group has a member behind."))]) : null,
     h("p", { class: "muted small" }, "Classification and provision rates follow SASRA's risk classification of assets. Check them against the current SASRA form before filing."),
   ];
 }

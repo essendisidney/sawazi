@@ -285,3 +285,4 @@ dialog::backdrop { background: rgb(10 14 26 / 0.5); backdrop-filter: blur(2px); 
 
 .demo-banner { background: var(--gold); color: #2a1d00; font-weight: 600; font-size: 0.86rem; text-align: center; padding: 7px 16px; }
 .login details { color: var(--muted); }
+.ch-group_meeting { background: var(--info-soft); color: var(--info); }
