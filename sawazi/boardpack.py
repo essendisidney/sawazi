@@ -55,8 +55,11 @@ def _groups(s: Session, institution_id: int) -> dict:
 
     from .oversight import insider_figures
 
+    from .watch import figures as watch_figures
+
     r, ins = figures(s, institution_id), insider_figures(s, institution_id)
-    return ({"groups": o} if o else {}) | ({"recovery": r} if r else {}) | ({"insiders": ins} if ins else {})
+    return (({"groups": o} if o else {}) | ({"recovery": r} if r else {}) | ({"insiders": ins} if ins else {})
+            | watch_figures(s, institution_id))
 
 
 def take_snapshot(s: Session, institution_id: int, as_of: date | None = None) -> PortfolioSnapshot:
@@ -216,6 +219,16 @@ def _summary(d: dict) -> list[str]:
         if grp and grp["groups_behind"]:
             out.append(f"{grp['groups_behind']} of {grp['groups']} borrowing group(s) have members behind: "
                        f"{kes(grp['arrears_cents'])} in arrears that their whole group stands behind.")
+        w = cur.figures.get("watch")
+        if w:
+            if w["suspense_over_30"]["count"]:
+                out.append(f"{w['suspense_over_30']['count']} payment(s) worth {kes(w['suspense_over_30']['cents'])} "
+                           f"have waited in suspense for more than 30 days: members have paid and their loans do not show it.")
+            for e in w["employers_short"][:3]:
+                out.append(f"{e['employer']} remitted {kes(e['gap_cents'])} less check-off than scheduled for {e['period']}.")
+            if w["integrity_high"]:
+                out.append(f"{w['integrity_high']} serious integrity check(s) need a person to look (duplicate ID numbers, "
+                           f"suspense cleared to insiders): see the Integrity page.")
         ins = cur.figures.get("insiders")
         if ins:
             out.append(f"{ins['loans']} insider loan(s) (board, committee, staff and related) with "
