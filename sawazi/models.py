@@ -648,3 +648,37 @@ class SheetLine(Base):
     cash_cents: Mapped[int] = mapped_column(BigInteger, default=0)  # paid in cash at this meeting
     present: Mapped[bool] = mapped_column(Boolean, default=True)
     note: Mapped[str | None] = mapped_column(String(200))
+
+
+class Recovery(Base):
+    """A defaulted loan being recovered: its stage, the agent chasing it, and what has come back (as reported)."""
+
+    __tablename__ = "recoveries"
+    __table_args__ = (UniqueConstraint("institution_id", "loan_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    loan_id: Mapped[int] = mapped_column(ForeignKey("loans.id"))
+    stage: Mapped[str] = mapped_column(String(20))  # demand_notice | debt_collector | auctioneer | court | recovered | closed
+    agent: Mapped[str | None] = mapped_column(String(200))  # debt collector (EDC), auctioneer or advocate
+    handed_over_on: Mapped[date | None] = mapped_column(Date)
+    recovered_cents: Mapped[int] = mapped_column(BigInteger, default=0)  # total so far, as the core system shows it
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class RecoveryGuarantor(Base):
+    """A guarantor's deposits the core system used towards a defaulted loan, and what has been refunded."""
+
+    __tablename__ = "recovery_guarantors"
+    __table_args__ = (UniqueConstraint("recovery_id", "member_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    recovery_id: Mapped[int] = mapped_column(ForeignKey("recoveries.id"), index=True)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id"), index=True)
+    used_cents: Mapped[int] = mapped_column(BigInteger)
+    used_on: Mapped[date] = mapped_column(Date)
+    refunded_cents: Mapped[int] = mapped_column(BigInteger, default=0)
+    refunded_on: Mapped[date | None] = mapped_column(Date)

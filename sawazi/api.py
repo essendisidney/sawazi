@@ -2089,9 +2089,11 @@ def root():
 
 from .groups_api import router as groups_router  # noqa: E402  (after the app exists)
 from .member_api import router as member_router  # noqa: E402
+from .recovery_api import router as recovery_router  # noqa: E402
 
 app.include_router(member_router)
 app.include_router(groups_router)
+app.include_router(recovery_router)
 app.mount("/console", StaticFiles(directory=CONSOLE_DIR, html=True), name="console")
 app.mount("/app", StaticFiles(directory=APP_DIR, html=True), name="member_app")
 app.mount("/site", StaticFiles(directory=SITE_DIR), name="site")

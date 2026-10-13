@@ -45,6 +45,9 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
    (`last_dividend_cents`, members / member_balances column "Last Dividend"; unknown is never a pass). One open
    advance per product (`api.open_advances`), never topped up (`api.is_advance_loan`); set guarantor cover none and
    max arrears 0. The core recovers it from the dividend; Sawazi sees it close on the next loans upload
+7. Recovery DONE (`sawazi/recovery_api.py`, console Recovery): defaulted loans with stage and agent (EDC, auctioneer,
+   court), recovered total as the core reports it, guarantors' deposits used and refunded. Recovered money is owed
+   back to those guarantors first (`refund_due_cents`); board pack In brief; guarantors see their own in the app
 
 ## Phase 4 — MFI group lending (started)
 - Joint liability (Sidney's answer): members borrow individually, the whole group stands behind every loan; groups meet

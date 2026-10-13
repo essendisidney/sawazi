@@ -200,6 +200,7 @@ const VIEWS = {
   loans: { label: "Loans", group: "Lending", icon: "cash", need: "read", render: viewLoans },
   products: { label: "Products", group: "Lending", icon: "layers", need: "read", render: viewProducts },
   groups: { label: "Groups", group: "Lending", icon: "users", need: "read", render: viewGroups },
+  recovery: { label: "Recovery", group: "Lending", icon: "flag", need: "read", render: viewRecovery },
   risk: { label: "Risk", group: "Oversight", icon: "shield", need: "read", render: viewRisk },
   board: { label: "Board pack", group: "Oversight", icon: "chart", need: "read", render: viewBoard },
   returns: { label: "Returns", group: "Oversight", icon: "file", need: "returns", render: viewReturns },
@@ -1837,3 +1838,106 @@ function splitForm(e, slot) {
 // ------------------------------------------------------------------ go
 
 start();
+
+// ------------------------------------------------------------------ recovery of defaulted loans
+
+const STAGE = { demand_notice: "Demand notice", debt_collector: "Debt collector", auctioneer: "Auctioneer", court: "Court",
+  recovered: "Recovered", closed: "Closed" };
+
+async function viewRecovery(id) {
+  if (id) return viewOneRecovery(id);
+  const recs = await api(`${inst()}/recoveries`);
+  const sum = (k) => recs.reduce((a, r) => a + r[k], 0);
+  const open = recs.filter((r) => !["recovered", "closed"].includes(r.stage));
+  const kpi = (label, value, bad) => h("div", { class: "kpi" }, h("span", { class: "eyebrow" }, label), h("span", { class: bad ? "v bad" : "v" }, value));
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Recovery"),
+      h("p", { class: "muted" }, "Defaulted loans: who is chasing each one, what has come back, and the guarantors' deposits used. Recovered money goes back to those guarantors first."))),
+    h("div", { class: "kpis" }, kpi("In recovery", String(open.length)), kpi("With an agent", String(open.filter((r) => r.agent).length)),
+      kpi("Recovered", kes(sum("recovered_kes"))), kpi("Owed back to guarantors", kes(sum("refund_due_kes")), sum("refund_due_kes") > 0)),
+    h("div", { class: "grid2" },
+      h("section", { class: "panel" }, recs.length ? h("div", { class: "tbl-wrap" }, h("table", null,
+        h("thead", null, h("tr", null, h("th", null, "Loan"), h("th", null, "Stage"), h("th", null, "Agent"), h("th", { class: "n" }, "Days with agent"),
+          h("th", { class: "n" }, "Recovered"), h("th", { class: "n" }, "Owed to guarantors"))),
+        h("tbody", null, recs.map((r) => h("tr", null,
+          h("td", null, h("a", { href: `#/recovery/${r.id}` }, h("b", { class: "num" }, r.loan_no)), h("div", { class: "muted small" }, `${r.member} · ${r.member_no}`)),
+          h("td", null, STAGE[r.stage]), h("td", { class: "small" }, r.agent || h("span", { class: "muted" }, "none")),
+          h("td", { class: "n" }, r.days_with_agent === null ? "" : String(r.days_with_agent)), h("td", { class: "n" }, kes(r.recovered_kes)),
+          h("td", { class: "n" }, r.refund_due_kes ? h("span", { class: "bad" }, kes(r.refund_due_kes)) : kes(0)))))))
+        : h("div", { class: "empty" }, "No loans in recovery.")),
+      can("recovery") ? recoveryForm(null) : null),
+  ];
+}
+
+function recoveryForm(r) {
+  const loan = h("input", { type: "text", required: true, maxlength: "40", placeholder: "loan number" });
+  const stage = h("select", null, Object.entries(STAGE).map(([k, v]) => h("option", { value: k }, v)));
+  stage.value = r ? r.stage : "demand_notice";
+  const agent = h("input", { type: "text", maxlength: "200", value: r?.agent || "", placeholder: "e.g. the debt collector's name" });
+  const handed = h("input", { type: "date", value: r?.handed_over_on || "" });
+  const recovered = h("input", { type: "number", min: "0", step: "0.01", value: String(r ? r.recovered_kes : 0) });
+  const note = h("input", { type: "text", maxlength: "2000", value: r?.note || "" });
+  const slot = h("div"), save = h("button", { type: "submit", class: "primary" }, r ? "Save" : "Start recovery");
+  return h("form", { class: "panel pad stack", onsubmit: (e) => {
+    e.preventDefault();
+    busy(save, slot, async () => {
+      const body = { stage: stage.value, agent: agent.value.trim() || null, handed_over_on: handed.value || null,
+        recovered_kes: recovered.value || 0, note: note.value.trim() || null };
+      const out = await api(`${inst()}/recoveries${r ? `/${r.id}` : ""}`, { method: r ? "PUT" : "POST", body: r ? body : { ...body, loan_no: loan.value.trim() } });
+      location.hash = `#/recovery/${out.id}`; route();
+    });
+  } }, h("h2", null, r ? "Update" : "Start a recovery"),
+    r ? null : h("label", null, "Loan", loan),
+    h("div", { class: "row-form" }, h("label", null, "Stage", stage), h("label", null, "Handed over on", handed)),
+    h("label", null, "Agent", agent),
+    h("label", null, "Recovered so far (KES, as the core system shows it)", recovered),
+    h("label", null, "Note", note), slot, save);
+}
+
+async function viewOneRecovery(id) {
+  const r = await api(`${inst()}/recoveries/${id}`);
+  const lineForm = (g) => {
+    const used = h("input", { type: "number", min: "1", step: "0.01", required: true, value: String(g.used_kes) });
+    const usedOn = h("input", { type: "date", required: true, value: g.used_on });
+    const refunded = h("input", { type: "number", min: "0", step: "0.01", value: String(g.refunded_kes) });
+    const refundedOn = h("input", { type: "date", value: g.refunded_on || "" });
+    const slot = h("div"), save = h("button", { type: "submit" }, "Save");
+    return h("form", { class: "row-form", onsubmit: (e) => {
+      e.preventDefault();
+      busy(save, slot, async () => {
+        await api(`${inst()}/recoveries/${r.id}/guarantors/${g.id}`, { method: "PUT", body: { used_kes: used.value, used_on: usedOn.value,
+          refunded_kes: refunded.value || 0, refunded_on: refundedOn.value || null } });
+        route();
+      });
+    } }, h("label", null, "Used", used), h("label", null, "On", usedOn), h("label", null, "Refunded", refunded), h("label", null, "On", refundedOn), save, slot);
+  };
+  const addForm = () => {
+    const no = h("input", { type: "text", required: true, maxlength: "40", list: "loan-guarantors" });
+    const amount = h("input", { type: "number", min: "1", step: "0.01", required: true });
+    const on = h("input", { type: "date", required: true });
+    const slot = h("div"), save = h("button", { type: "submit", class: "primary" }, "Record");
+    return h("form", { class: "panel pad stack", onsubmit: (e) => {
+      e.preventDefault();
+      busy(save, slot, async () => {
+        await api(`${inst()}/recoveries/${r.id}/guarantors`, { method: "POST", body: { member_no: no.value.trim(), used_kes: amount.value, used_on: on.value } });
+        route();
+      });
+    } }, h("h2", null, "Guarantor's deposits used"),
+      h("datalist", { id: "loan-guarantors" }, r.loan_guarantors.map((g) => h("option", { value: g.member_no }, `${g.name} (pledged ${kes(g.pledged_kes)})`))),
+      h("div", { class: "row-form" }, h("label", null, "Member no", no), h("label", null, "Amount (KES)", amount), h("label", null, "On", on)),
+      r.loan_guarantors.length ? h("p", { class: "muted small" }, `This loan's guarantors: ${r.loan_guarantors.map((g) => `${g.name} ${g.member_no}`).join(", ")}`) : null,
+      slot, save);
+  };
+  const edit = can("recovery");
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("p", null, h("a", { href: "#/recovery" }, "← Recovery")),
+      h("h1", null, `Loan ${r.loan_no}`), h("p", { class: "muted" }, `${r.member} · ${r.member_no} · balance ${kes(r.balance_kes)} · ${r.days_in_arrears} days behind · ${STAGE[r.stage]}${r.agent ? ` with ${r.agent}` : ""}`))),
+    r.refund_due_kes ? note("err", `${kes(r.refund_due_kes)} recovered is owed back to guarantors whose deposits were used. Record each refund once the core system has made it.`) : null,
+    h("div", { class: "grid2" },
+      h("section", { class: "panel pad stack" }, h("h2", null, "Guarantors' deposits"),
+        r.guarantors.length ? r.guarantors.map((g) => h("div", { class: "stack" }, h("b", null, `${g.name} · ${g.member_no}`),
+          edit ? lineForm(g) : h("p", null, `Used ${kes(g.used_kes)} on ${g.used_on}; refunded ${kes(g.refunded_kes)}${g.refunded_on ? ` on ${g.refunded_on}` : ""}`)))
+          : h("p", { class: "muted" }, "No guarantor's deposits used.")),
+      edit ? h("div", { class: "stack" }, recoveryForm(r), addForm()) : null),
+  ];
+}

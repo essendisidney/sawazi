@@ -51,7 +51,10 @@ def _groups(s: Session, institution_id: int) -> dict:
     from .groups_api import overview
 
     o = overview(s, institution_id)
-    return {"groups": o} if o else {}  # older snapshots, and SACCOs without groups, have no "groups" entry
+    from .recovery_api import figures
+
+    r = figures(s, institution_id)
+    return ({"groups": o} if o else {}) | ({"recovery": r} if r else {})  # older snapshots have neither entry
 
 
 def take_snapshot(s: Session, institution_id: int, as_of: date | None = None) -> PortfolioSnapshot:
@@ -211,6 +214,12 @@ def _summary(d: dict) -> list[str]:
         if grp and grp["groups_behind"]:
             out.append(f"{grp['groups_behind']} of {grp['groups']} borrowing group(s) have members behind: "
                        f"{kes(grp['arrears_cents'])} in arrears that their whole group stands behind.")
+        rec = cur.figures.get("recovery")
+        if rec and (rec["open"] or rec["refund_due_cents"]):
+            out.append(f"{rec['open']} defaulted loan(s) in recovery, {rec['with_agent']} with a debt collector or "
+                       f"other agent; {kes(rec['recovered_cents'])} recovered so far."
+                       + (f" {kes(rec['refund_due_cents'])} of it is owed back to {rec['refunds_waiting']} recovery(ies)' "
+                          f"guarantors whose deposits were used." if rec["refund_due_cents"] else ""))
         circles = flags.get("mutual_guarantee", 0) + flags.get("guarantee_circle", 0)
         if circles:
             out.append(f"{circles} group(s) of members guarantee each other's loans: worth checking they are genuine.")
