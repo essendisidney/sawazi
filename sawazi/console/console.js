@@ -621,7 +621,7 @@ const IMPORTS = [
   ["member_balances", "Member balances or payroll", "Deposits and share capital (monthly), or gross and net pay from payroll, for existing members."],
   ["loans", "Loans", "Export from the core banking system."],
   ["groups", "MFI groups", "Group No, Group Name, Meeting Day, Frequency (weekly or fortnightly), Officer Email."],
-  ["group_members", "MFI group members", "Group No, Member No, Role (member, chair, treasurer or secretary)."],
+  ["group_members", "MFI group members", "Group No, Member No, Role (member, chair, treasurer, secretary, or group account for the group's own account that holds a loan to the whole group)."],
 ];
 
 function viewUpload() {
@@ -1724,6 +1724,7 @@ async function viewGroup(id) {
     h("div", { class: "kpis" },
       kpi("Outstanding", kes(g.outstanding_kes), `${g.loans} loans to ${g.borrowers} members`),
       kpi("Arrears", kes(g.arrears_kes), `${g.members_behind} ${g.members_behind === 1 ? "member" : "members"} behind`, g.arrears_kes > 0),
+      g.group_loan_kes ? kpi("Loan to the group", kes(g.group_loan_kes), g.group_loan_behind ? "behind: every member is liable" : "up to date", g.group_loan_behind) : null,
       kpi("PAR 30", pct(g.par30_pct), "of the group's outstanding", g.par30_pct > 0)),
     g.arrears_kes > 0 ? note("warn", `Joint liability: the whole group stands behind ${kes(g.shared_arrears_kes)} in arrears. Raise it at the next meeting.`) : null,
     h("div", { class: "grid2" }, h("div", { class: "stack" }, members, can("groups") ? addMemberForm(g) : null), sheets),
@@ -1732,7 +1733,8 @@ async function viewGroup(id) {
 
 function addMemberForm(g) {
   const no = h("input", { type: "text", required: true, maxlength: "40", placeholder: "member number" });
-  const role = h("select", null, ["member", "chair", "treasurer", "secretary"].map((r) => h("option", { value: r }, r[0].toUpperCase() + r.slice(1))));
+  const role = h("select", null, ["member", "chair", "treasurer", "secretary"].map((r) => h("option", { value: r }, r[0].toUpperCase() + r.slice(1))),
+    h("option", { value: "group_account" }, "Group's own account (loan to the group)"));
   const slot = h("div"), add = h("button", { type: "submit" }, "Add to group");
   return h("form", { class: "panel pad stack", onsubmit: (e) => {
     e.preventDefault();

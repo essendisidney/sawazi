@@ -63,7 +63,10 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
   consent / DPA that allows sharing). For their own guarantors they see the count of other network SACCOs and the
   total pledged there; never which SACCOs, never arrears (credit reference business). Linked by ID number only
   (`network.id_key`); demo institutions only see demos
-- Group arrears in the Risk view and board pack DONE; next: group loan products if a pilot MFI lends to groups as a whole
+- Group arrears in the Risk view and board pack DONE
+- Loans to a group as a whole DONE: the group's own core account joins the group with role `group_account` (one per
+  group). It sits on the meeting sheet, so cash for the group loan is banked and allocated like a member's; it is not
+  counted as a member; its arrears always go to the meeting as a note ("every member is liable")
 
 ## Phase 2 — done
 1. Member balances and pay DONE (members export columns + `member_balances` import; unknown is never zero)

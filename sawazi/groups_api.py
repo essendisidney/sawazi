@@ -24,7 +24,10 @@ from .models import (ExceptionItem, GroupMember, LendingGroup, Loan, MeetingShee
 
 router = APIRouter(tags=["groups"])
 
-ROLES = ("member", "chair", "treasurer", "secretary")
+# "group_account" is the group's own account in the core system, which holds a loan made to the group as a whole.
+# It sits on the meeting sheet like a member, so the group's cash for that loan is banked and allocated the same way.
+ACCOUNT = "group_account"
+ROLES = ("member", "chair", "treasurer", "secretary", ACCOUNT)
 FREQUENCIES = {"weekly": 7, "fortnightly": 14}
 DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
@@ -47,13 +50,17 @@ def summary(s: Session, g: LendingGroup) -> dict:
     """The group's portfolio. Joint liability: when one member is behind, every member stands behind that amount."""
     members = _active_members(s, g)
     ids = [m.id for _, m in members]
+    account = {m.id for gm, m in members if gm.role == ACCOUNT}
     loans = list(s.scalars(select(Loan).where(Loan.institution_id == g.institution_id, Loan.member_id.in_(ids),
                                               Loan.status == "active"))) if ids else []
     outstanding = sum(ln.balance_cents for ln in loans)
     arrears = sum(ln.arrears_cents for ln in loans)
     at_risk = sum(ln.balance_cents for ln in loans if ln.days_in_arrears > 30)
-    behind = sorted({ln.member_id for ln in loans if ln.arrears_cents > 0})
-    return {"members": len(members), "borrowers": len({ln.member_id for ln in loans}), "loans": len(loans),
+    behind = sorted({ln.member_id for ln in loans if ln.arrears_cents > 0} - account)
+    own = [ln for ln in loans if ln.member_id in account]
+    return {"members": len(members) - len(account), "borrowers": len({ln.member_id for ln in loans} - account),
+            "loans": len(loans), "group_loan_kes": sum(ln.balance_cents for ln in own) / 100,
+            "group_loan_behind": any(ln.arrears_cents > 0 for ln in own),
             "outstanding_kes": outstanding / 100, "arrears_kes": arrears / 100,
             "par30_pct": round(100 * at_risk / outstanding, 1) if outstanding else 0.0,
             "members_behind": len(behind),
@@ -169,6 +176,12 @@ def add_member(institution_id: int, group_id: int, body: GroupMemberIn, s: Sessi
     if current and current.group_id != g.id:
         other = s.get(LendingGroup, current.group_id)
         raise HTTPException(409, f"{m.member_no} is already in group {other.group_no}; they must leave it first")
+    if body.role == ACCOUNT:
+        held = s.scalar(select(GroupMember).where(GroupMember.group_id == g.id, GroupMember.role == ACCOUNT,
+                                                  GroupMember.left_on.is_(None), GroupMember.member_id != m.id))
+        if held:
+            raise HTTPException(409, f"group {g.group_no} already has its own account "
+                                     f"({s.get(Member, held.member_id).member_no})")
     if current:
         current.role = body.role
     else:

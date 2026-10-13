@@ -156,3 +156,28 @@ def test_groups_count_in_risk_board_pack_and_collections(mfi):
     html = c.get("/institutions/1/board-pack.html", headers=acc, params={"month": "2026-09"}).text
     assert "5. Group lending" in html and "6. Governance" in html and "Umoja Women" in html
     assert "borrowing group(s) have members behind" in html
+
+
+def test_a_loan_to_the_whole_group_sits_on_the_groups_own_account(mfi):
+    from sawazi.models import Reminder
+
+    c, Session, gid, officer = mfi
+    with Session() as s:
+        s.add_all([Member(id=13, institution_id=1, member_no="UMJ01A", name="Umoja Women Group"),
+                   Member(id=14, institution_id=1, member_no="M4", name="Other Account")])
+        s.flush()
+        s.add(Loan(id=13, institution_id=1, member_id=13, loan_no="GRP13", principal_cents=100_000_00,
+                   balance_cents=80_000_00, installment_cents=5_000_00, arrears_cents=5_000_00, days_in_arrears=5))
+        s.commit()
+    r = c.post("/institutions/1/import/group_members", headers=login(c, "accountant@a.test"), files={"file": ("m.csv", (
+        "Group No,Member No,Role\nUMJ01,UMJ01A,Group Account\nUMJ01,M4,group account\n").encode())})
+    assert r.json()["created"] == 1 and "already has its own account" in r.json()["rejected"][0]
+    assert c.post(f"/institutions/1/groups/{gid}/members", headers=officer,
+                  json={"member_no": "M4", "role": "group_account"}).status_code == 409
+    g = c.get(f"/institutions/1/groups/{gid}", headers=officer).json()
+    assert (g["members"], g["loans"], g["group_loan_kes"], g["group_loan_behind"], g["members_behind"]) == (3, 4, 80_000, True, 1)
+
+    assert c.post("/institutions/1/collections/queue", headers=officer).status_code == 200
+    with Session() as s:
+        rem = s.scalar(select(Reminder).where(Reminder.loan_id == 13))  # only 5 days behind, still the group's business
+        assert rem.channel == "group_meeting" and "the group's own loan GRP13" in rem.message
