@@ -1190,7 +1190,7 @@ const CLASS_LABEL = { performing: "Performing", watch: "Watch", substandard: "Su
 const pct = (v) => `${(v || 0).toFixed(1)}%`;
 
 async function viewRisk() {
-  const r = await api(`${inst()}/risk`);
+  const [r, net] = await Promise.all([api(`${inst()}/risk`), api(`${inst()}/network/guarantees`)]);
   const p = r.portfolio, g = r.guarantors;
   const kpi = (label, value, sub, bad) => h("div", { class: "kpi" },
     h("span", { class: "eyebrow" }, label), h("span", { class: bad ? "v bad" : "v" }, value), h("span", { class: "s" }, sub));
@@ -1261,6 +1261,7 @@ async function viewRisk() {
         h("td", null, h("a", { href: "#/groups" }, b.name), " ", h("span", { class: "num muted" }, b.group_no)),
         h("td", { class: "n" }, b.members), h("td", { class: "n" }, b.members_behind), h("td", { class: "n" }, kes(b.arrears_kes)),
         h("td", { class: "n" }, pct(b.par30_pct)))) : [h("tr", null, h("td", { colspan: "5", class: "muted" }, "No group has a member behind."))]) : null,
+    networkPanel(net),
     h("p", { class: "muted small" }, "Classification and provision rates follow SASRA's risk classification of assets. Check them against the current SASRA form before filing."),
   ];
 }
@@ -1940,4 +1941,34 @@ async function viewOneRecovery(id) {
           : h("p", { class: "muted" }, "No guarantor's deposits used.")),
       edit ? h("div", { class: "stack" }, recoveryForm(r), addForm()) : null),
   ];
+}
+
+// ------------------------------------------------------------------ guarantee network across SACCOs
+
+function networkPanel(net) {
+  const toggle = () => {
+    const ref = h("input", { type: "text", maxlength: "200", placeholder: "e.g. member consent clause, DPA of 1 Oct 2026" });
+    const slot = h("div"), go = h("button", { type: "submit", class: net.opted_in ? "" : "primary" }, net.opted_in ? "Leave the network" : "Join the network");
+    return h("form", { class: "stack", onsubmit: (e) => {
+      e.preventDefault();
+      busy(go, slot, async () => {
+        await api(`${inst()}/network`, { method: "PUT", body: { opt_in: !net.opted_in, confirm: ref.value.trim() || null } });
+        route();
+      });
+    } }, net.opted_in ? null : h("label", null, "Reference of the consent or data processing terms that allow sharing", ref), slot, go);
+  };
+  const intro = h("p", { class: "muted small" }, "SACCOs in the network see, for their own guarantors, how many other network SACCOs that member also guarantees at and the total pledged there. Never which SACCOs, never arrears. Members are linked by ID number only.");
+  if (!net.opted_in) {
+    return h("section", { class: "panel pad stack" }, h("h2", null, "Guarantees at other SACCOs"), intro,
+      h("p", null, "This SACCO has not joined the network."), can("manage_users") ? toggle() : null);
+  }
+  return h("section", { class: "panel" }, h("div", { class: "pad stack" }, h("h2", null, `Guarantees at other SACCOs (${net.saccos} SACCOs in the network)`), intro),
+    net.members.length ? h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Member"), h("th", { class: "n" }, "Guaranteed here"), h("th", { class: "n" }, "Deposits here"),
+        h("th", { class: "n" }, "Other SACCOs"), h("th", { class: "n" }, "Guaranteed there"), h("th", { class: "n" }, "Total"))),
+      h("tbody", null, net.members.map((x) => h("tr", null, h("td", null, x.name, " ", h("span", { class: "num muted" }, x.member_no)),
+        h("td", { class: "n" }, kes(x.pledged_here_kes)), h("td", { class: "n" }, x.deposits_here_kes === null ? "not known" : kes(x.deposits_here_kes)),
+        h("td", { class: "n" }, x.saccos_elsewhere), h("td", { class: "n" }, kes(x.pledged_elsewhere_kes)),
+        h("td", { class: "n" }, h("b", null, kes(x.total_pledged_kes)))))))) : h("div", { class: "empty" }, "None of your guarantors guarantee at another network SACCO."),
+    can("manage_users") ? h("div", { class: "pad" }, toggle()) : null);
 }

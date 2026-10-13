@@ -36,6 +36,8 @@ class Institution(Base):
     kind: Mapped[str] = mapped_column(String(20), default="sacco")  # sacco | mfi
     paybill: Mapped[str | None] = mapped_column(String(20))
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())  # fictional data only
+    # Joined the cross-SACCO guarantee network (sawazi/network.py): an admin's deliberate, audited choice
+    network_opt_in: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
