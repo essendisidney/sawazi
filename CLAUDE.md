@@ -48,6 +48,10 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 7. Recovery DONE (`sawazi/recovery_api.py`, console Recovery): defaulted loans with stage and agent (EDC, auctioneer,
    court), recovered total as the core reports it, guarantors' deposits used and refunded. Recovered money is owed
    back to those guarantors first (`refund_due_cents`); board pack In brief; guarantors see their own in the app
+8. Promises, officers, insiders DONE (`sawazi/oversight.py`): promises to pay are kept or broken by the payments
+   allocated to the loan, never typed in; a running promise keeps the loan out of the collections queue. Officer
+   books from the loans export's Loan Officer column. Insiders (members export "Insider": board, supervisory, staff,
+   related) get a WARN appraisal check, a console page and a board pack line; Sawazi never decides the policy
 
 ## Phase 4 — MFI group lending (started)
 - Joint liability (Sidney's answer): members borrow individually, the whole group stands behind every loan; groups meet

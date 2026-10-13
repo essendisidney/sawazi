@@ -70,10 +70,12 @@ for m in members:
         m["gross"] = m["net"] = None
 money = lambda v: "" if v is None else f"{v:,.2f}"  # noqa: E731
 w("members.csv", ["Member No", "Name", "Phone", "ID Number", "Employer", "Date Joined", "Deposits",
-                  "Share Capital", "Gross Pay", "Net Pay", "Balances As At", "Last Dividend"],
+                  "Share Capital", "Gross Pay", "Net Pay", "Balances As At", "Last Dividend", "Insider"],
   [[m["member_no"], m["name"], m["phone"], m["id_number"], m["employer"], m["joined"], money(m["deposits"]),
     money(m["shares"]), money(m["gross"]), money(m["net"]), "31/08/2026",
-    money(round((m["deposits"] + m["shares"]) * 0.09, -1))] for m in members])  # 9% on deposits and shares
+    money(round((m["deposits"] + m["shares"]) * 0.09, -1)),
+    {3: "Board", 11: "Staff", 19: "Supervisory", 27: "Related"}.get(int(m["member_no"][2:]), "")]
+   for m in members])  # 9% dividend on deposits and shares; a few fictional insiders
 
 # ---- loans
 loans = []
@@ -115,10 +117,11 @@ def arrears_parts(l):
 
 
 w("loans.csv", ["Loan No", "Member No", "Product", "Principal", "Balance", "Installment", "Arrears",
-                "Penalty Arrears", "Interest Arrears", "Days In Arrears", "Disbursement Date", "Repayment Mode"],
+                "Penalty Arrears", "Interest Arrears", "Days In Arrears", "Disbursement Date", "Repayment Mode", "Loan Officer"],
   [[l["loan_no"], l["member_no"], l["product"], f"{l['principal']:,.2f}", f"{l['balance']:,.2f}",
     f"{l['inst']:,.2f}", f"{l['arrears']:,.2f}", *(f"{x:,.2f}" for x in arrears_parts(l)),
-    l["dpd"], l["disbursed"], l["via"]] for l in loans])
+    l["dpd"], l["disbursed"], l["via"], ("Chebet Credit Officer", "Kamau Mwangi", "Akinyi Odhiambo")[k % 3]]
+   for k, l in enumerate(loans)])  # fictional officers
 
 # ---- M-Pesa paybill statement (Safaricom org portal layout)
 def typo(s):
