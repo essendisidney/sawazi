@@ -80,7 +80,10 @@ def seed():
         for prod in [{"code": "DEV", "name": "Development Loan", "max_amount_kes": 3_000_000, "max_term_months": 48,
                       "interest_rate_pct": 12, "second_approval_above_kes": 1_000_000},
                      {"code": "EMG", "name": "Emergency Loan", "max_amount_kes": 200_000, "max_term_months": 12,
-                      "interest_rate_pct": 12, "min_membership_months": 3, "guarantor_cover": "none"}]:
+                      "interest_rate_pct": 12, "min_membership_months": 3, "guarantor_cover": "none"},
+                     {"code": "DIV", "name": "Dividend Advance", "max_amount_kes": 500_000, "max_term_months": 12,
+                      "interest_rate_pct": 12, "max_arrears_days": 0, "guarantor_cover": "none",
+                      "one_third_rule": False, "deposits_multiplier": 0, "dividend_advance_pct": 50}]:
             c.post(f"/institutions/{iid}/loan-products", json=prod).raise_for_status()
         # two fictional MFI-style groups, to show group lending
         groups = "\n".join(["Group No,Group Name,Meeting Day,Frequency,Officer Email",

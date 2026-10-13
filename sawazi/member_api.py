@@ -94,6 +94,7 @@ SWAHILI: list[tuple[str, str]] = [
     (r"You already have applications being looked at\. Please wait for those first\.",
      "Una maombi ambayo bado yanaangaliwa. Tafadhali subiri hayo kwanza."),
     (r"That is not one of your active loans\.", "Huo si mmoja wa mikopo yako inayoendelea."),
+    (r"A dividend advance cannot be topped up\.", "Mkopo wa mapema wa gawio hauwezi kuongezwa."),
     (r"Choose up to 12 months\.", "Chagua hadi miezi 12."),
     (r"(\S+) is not another member of your SACCO\. Check the member number\.",
      r"\1 si mwanachama mwingine wa SACCO yako. Angalia nambari ya uanachama."),
@@ -534,25 +535,29 @@ def _product(s: Session, me: SignedIn, product_id: int):
 
 
 def _indicative(s: Session, me: SignedIn, p, amount_cents: int, term: int):
+    from .api import _member_facts, _product_rules, open_advances
     from .engine import appraisal
-    from .models import Loan
 
     m = me.member
-    rules = appraisal.Product(p.min_amount_cents, p.max_amount_cents, p.max_term_months, p.interest_rate_bps,
-                              p.interest_method, p.deposits_multiplier_pct, p.min_membership_months, p.max_arrears_days,
-                              p.one_third_rule, p.guarantor_cover, p.min_guarantors)
-    loans = [appraisal.ExistingLoan(ln.loan_no, ln.balance_cents, ln.days_in_arrears) for ln in s.scalars(
-        select(Loan).where(Loan.institution_id == m.institution_id, Loan.member_id == m.id, Loan.status == "active"))]
-    facts = appraisal.MemberFacts(m.joined_on, m.deposits_cents, m.gross_pay_cents, m.net_pay_cents)
-    return appraisal.appraise(amount_cents, term, rules, facts, loans, [], utcnow().date())
+    _, facts, loans = _member_facts(s, m.institution_id, m.member_no)
+    facts.open_advances = open_advances(s, p, m.id)
+    return appraisal.appraise(amount_cents, term, _product_rules(p), facts, loans, [], utcnow().date())
 
 
 @router.get("/m/products")
 def products(me: SignedIn = Depends(current_member), s: Session = Depends(get_session)):
     from .models import LoanProduct
 
+    div = me.member.last_dividend_cents
+
+    def advance_kes(p):  # a dividend advance's limit for this member; None when not one, or the dividend is unknown
+        if not p.dividend_advance_pct or div is None:
+            return None
+        return min(div * p.dividend_advance_pct // 100, p.max_amount_cents) / 100
+
     return [{"id": p.id, "name": p.name, "min_kes": p.min_amount_cents / 100, "max_kes": p.max_amount_cents / 100,
-             "max_months": p.max_term_months, "rate_pct": p.interest_rate_bps / 100}
+             "max_months": p.max_term_months, "rate_pct": p.interest_rate_bps / 100,
+             "dividend_advance": bool(p.dividend_advance_pct), "advance_up_to_kes": advance_kes(p)}
             for p in s.scalars(select(LoanProduct).where(LoanProduct.institution_id == me.member.institution_id,
                                                          LoanProduct.active.is_(True)).order_by(LoanProduct.name))]
 
@@ -638,6 +643,10 @@ def apply(body: ApplyIn, me: SignedIn = Depends(current_member), s: Session = De
                                              Loan.loan_no == body.top_up_loan_no.strip(), Loan.status == "active"))
         if top_up is None:
             raise HTTPException(422, "That is not one of your active loans.")
+        from .api import is_advance_loan
+
+        if p.dividend_advance_pct or is_advance_loan(s, top_up):
+            raise HTTPException(422, "A dividend advance cannot be topped up.")
     nominated = []
     for no in dict.fromkeys(x.strip().upper() for x in body.guarantors if x.strip()):
         g = s.scalar(select(Member).where(Member.institution_id == m.institution_id, Member.member_no == no))

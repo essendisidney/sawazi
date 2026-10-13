@@ -70,9 +70,10 @@ for m in members:
         m["gross"] = m["net"] = None
 money = lambda v: "" if v is None else f"{v:,.2f}"  # noqa: E731
 w("members.csv", ["Member No", "Name", "Phone", "ID Number", "Employer", "Date Joined", "Deposits",
-                  "Share Capital", "Gross Pay", "Net Pay", "Balances As At"],
+                  "Share Capital", "Gross Pay", "Net Pay", "Balances As At", "Last Dividend"],
   [[m["member_no"], m["name"], m["phone"], m["id_number"], m["employer"], m["joined"], money(m["deposits"]),
-    money(m["shares"]), money(m["gross"]), money(m["net"]), "31/08/2026"] for m in members])
+    money(m["shares"]), money(m["gross"]), money(m["net"]), "31/08/2026",
+    money(round((m["deposits"] + m["shares"]) * 0.09, -1))] for m in members])  # 9% on deposits and shares
 
 # ---- loans
 loans = []

@@ -1113,7 +1113,7 @@ async function viewProducts(id) {
         h("th", { class: "n" }, "Rate"), h("th", { class: "n" }, "Deposits ×"), h("th", null, "Guarantors"), h("th", null, ""))),
       h("tbody", null, products.map((p) => h("tr", null, h("td", { class: "num" }, p.code), h("td", null, p.name, p.active ? "" : h("span", { class: "muted small" }, " (inactive)")),
         h("td", { class: "n" }, kes(p.max_amount_kes)), h("td", { class: "n" }, p.max_term_months), h("td", { class: "n" }, `${p.interest_rate_pct}%`),
-        h("td", { class: "n" }, p.deposits_multiplier || "off"), h("td", null, { above_deposits: "Above deposits", full: "Full amount", none: "None" }[p.guarantor_cover]),
+        h("td", { class: "n" }, p.deposits_multiplier || "off"), h("td", null, p.dividend_advance_pct ? `Dividend advance (${p.dividend_advance_pct}%)` : { above_deposits: "Above deposits", full: "Full amount", none: "None" }[p.guarantor_cover]),
         h("td", null, editable ? h("a", { href: `#/products/${p.id}` }, "Edit") : null)))))));
   const current = id ? products.find((p) => p.id === Number(id)) : null;
   return [
@@ -1126,7 +1126,7 @@ async function viewProducts(id) {
 function productForm(p) {
   const d = p || { code: "", name: "", active: true, min_amount_kes: 1000, max_amount_kes: "", max_term_months: 36, interest_rate_pct: 12,
     interest_method: "reducing", deposits_multiplier: 3, min_membership_months: 6, max_arrears_days: 30, one_third_rule: true,
-    guarantor_cover: "above_deposits", min_guarantors: 0, second_approval_above_kes: null };
+    guarantor_cover: "above_deposits", min_guarantors: 0, second_approval_above_kes: null, dividend_advance_pct: null };
   const f = {
     code: h("input", { type: "text", required: true, maxlength: "20", value: d.code }),
     name: h("input", { type: "text", required: true, maxlength: "100", value: d.name }),
@@ -1140,6 +1140,7 @@ function productForm(p) {
     max_arrears_days: h("input", { type: "number", min: "0", max: "365", value: String(d.max_arrears_days) }),
     guarantor_cover: h("select", null, h("option", { value: "above_deposits" }, "Amount above own deposits"), h("option", { value: "full" }, "Full amount"), h("option", { value: "none" }, "None")),
     min_guarantors: h("input", { type: "number", min: "0", max: "10", value: String(d.min_guarantors) }),
+    dividend_advance_pct: h("input", { type: "number", min: "1", max: "100", value: d.dividend_advance_pct ? String(d.dividend_advance_pct) : "", placeholder: "Leave empty if not" }),
     second_approval_above_kes: h("input", { type: "number", min: "1", step: "0.01", value: d.second_approval_above_kes === null ? "" : String(d.second_approval_above_kes), placeholder: "Leave empty for one approver" }),
   };
   f.interest_method.value = d.interest_method; f.guarantor_cover.value = d.guarantor_cover;
@@ -1156,7 +1157,8 @@ function productForm(p) {
         interest_rate_pct: f.interest_rate_pct.value, interest_method: f.interest_method.value,
         deposits_multiplier: f.deposits_multiplier.value || 0, min_membership_months: Number(f.min_membership_months.value || 0),
         max_arrears_days: Number(f.max_arrears_days.value || 0), one_third_rule: oneThird.checked, guarantor_cover: f.guarantor_cover.value,
-        min_guarantors: Number(f.min_guarantors.value || 0), second_approval_above_kes: f.second_approval_above_kes.value || null };
+        min_guarantors: Number(f.min_guarantors.value || 0), second_approval_above_kes: f.second_approval_above_kes.value || null,
+        dividend_advance_pct: f.dividend_advance_pct.value ? Number(f.dividend_advance_pct.value) : null };
       await api(`${inst()}/loan-products${p ? `/${p.id}` : ""}`, { method: p ? "PUT" : "POST", body });
       location.hash = "#/products"; route();
     });
@@ -1170,6 +1172,8 @@ function productForm(p) {
     h("label", { class: "check" }, oneThird, "One-third take-home rule"),
     h("div", { class: "row-form" }, L("Guarantor cover", f.guarantor_cover), L("Minimum guarantors", f.min_guarantors)),
     L("Two approvers above (KES)", f.second_approval_above_kes),
+    L("Dividend advance: % of last dividend", f.dividend_advance_pct),
+    h("p", { class: "muted small" }, "For a dividend advance set guarantor cover to None and max days in arrears to 0. One advance at a time; it cannot be topped up; the core recovers it from the dividend."),
     h("label", { class: "check" }, active, "Active (new applications can use it)"),
     slot, h("div", { class: "actions" }, p ? h("a", { href: "#/products", class: "btn" }, "Cancel") : null, save));
 }

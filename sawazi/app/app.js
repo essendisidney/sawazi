@@ -33,7 +33,7 @@ const T = {
     declineQ: "Decline this request?", cancel: "Cancel", youGuarantee: "You guarantee", yourGuarantors: "Your guarantors",
     canStill: "You can still guarantee", none: "None.", apply: "Apply for a loan", product: "Loan type", amount: "Amount (KES)",
     months: "Months", check: "Check", guide: "This is a guide, not a decision. Your SACCO decides.", instalmentEst: "About",
-    perMonth: "a month", upTo: "You may qualify for up to", couldBeLower: "could be lower: some figures are missing",
+    advUpTo: "up to", perMonth: "a month", upTo: "You may qualify for up to", couldBeLower: "could be lower: some figures are missing",
     needCover: "Guarantors needed for", purpose: "What is it for?", gNos: "Guarantors' member numbers (optional)",
     gHint: "Separate with commas. The SACCO will ask them.", send: "Send application", yourApps: "Your applications",
     noApps: "No applications yet.", sent: "Sent. A credit officer will check it and contact your guarantors.", signout: "Sign out", demo: "Demo SACCO: fictional data, not real accounts.", offline: "Cannot reach your SACCO. Check your connection.",
@@ -64,7 +64,7 @@ const T = {
     declineQ: "Ukatae ombi hili?", cancel: "Ghairi", youGuarantee: "Unadhamini", yourGuarantors: "Wadhamini wako",
     canStill: "Bado unaweza kudhamini", none: "Hakuna.", apply: "Omba mkopo", product: "Aina ya mkopo", amount: "Kiasi (KES)",
     months: "Miezi", check: "Angalia", guide: "Huu ni mwongozo tu, si uamuzi. SACCO yako ndiyo inaamua.", instalmentEst: "Takriban",
-    perMonth: "kwa mwezi", upTo: "Unaweza kustahili hadi", couldBeLower: "huenda ikawa chini: baadhi ya taarifa hazipo",
+    advUpTo: "hadi", perMonth: "kwa mwezi", upTo: "Unaweza kustahili hadi", couldBeLower: "huenda ikawa chini: baadhi ya taarifa hazipo",
     needCover: "Wadhamini wanahitajika kwa", purpose: "Ni wa kufanyia nini?", gNos: "Nambari za uanachama za wadhamini (si lazima)",
     gHint: "Tenganisha kwa koma. SACCO itawaomba.", send: "Tuma ombi", yourApps: "Maombi yako",
     noApps: "Bado hakuna ombi.", sent: "Limetumwa. Afisa wa mikopo ataliangalia na kuwasiliana na wadhamini wako.", signout: "Toka", demo: "SACCO ya majaribio: taarifa za kubuni, si akaunti halisi.", offline: "Hatuwezi kufikia SACCO yako. Angalia mtandao wako.",
@@ -374,7 +374,8 @@ async function viewLoan() {
   const [products, apps, o] = await Promise.all([api("/m/products"), api("/m/applications"), api("/m/overview")]);
   const kind = h("select", null, h("option", { value: "" }, t("newLoan")),
     o.loans.map((l) => h("option", { value: l.loan_no }, `${t("topUp")} ${l.loan_no} (${l.product})`)));
-  const product = h("select", null, products.map((p) => h("option", { value: p.id }, p.name)));
+  const product = h("select", null, products.map((p) => h("option", { value: p.id },
+    p.advance_up_to_kes !== null && p.advance_up_to_kes !== undefined ? `${p.name} (${t("advUpTo")} ${kes(p.advance_up_to_kes)})` : p.name)));
   const amount = h("input", { type: "number", inputmode: "decimal", min: "1", step: "1", required: true });
   const months = h("input", { type: "number", inputmode: "numeric", min: "1", max: "240", required: true });
   const purpose = h("input", { type: "text", maxlength: "300" });

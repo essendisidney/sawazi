@@ -1160,6 +1160,8 @@ class ProductIn(BaseModel):
     guarantor_cover: str = Field(default="above_deposits", pattern="^(above_deposits|full|none)$")
     min_guarantors: int = Field(default=0, ge=0, le=10)
     second_approval_above_kes: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
+    dividend_advance_pct: int | None = Field(default=None, ge=1, le=100,
+                                             description="a dividend advance: up to this % of the last dividend")
 
     def apply(self, prod: LoanProduct) -> None:
         if self.min_amount_kes > self.max_amount_kes:
@@ -1171,7 +1173,7 @@ class ProductIn(BaseModel):
         prod.deposits_multiplier_pct = int(self.deposits_multiplier * 100)
         prod.min_membership_months, prod.max_arrears_days = self.min_membership_months, self.max_arrears_days
         prod.one_third_rule, prod.guarantor_cover = self.one_third_rule, self.guarantor_cover
-        prod.min_guarantors = self.min_guarantors
+        prod.min_guarantors, prod.dividend_advance_pct = self.min_guarantors, self.dividend_advance_pct
         prod.second_approval_above_cents = (_cents(self.second_approval_above_kes)
                                             if self.second_approval_above_kes is not None else None)
 
@@ -1183,7 +1185,7 @@ def _product_out(p: LoanProduct) -> dict:
             "interest_method": p.interest_method, "deposits_multiplier": p.deposits_multiplier_pct / 100,
             "min_membership_months": p.min_membership_months, "max_arrears_days": p.max_arrears_days,
             "one_third_rule": p.one_third_rule, "guarantor_cover": p.guarantor_cover,
-            "min_guarantors": p.min_guarantors,
+            "min_guarantors": p.min_guarantors, "dividend_advance_pct": p.dividend_advance_pct,
             "second_approval_above_kes": (p.second_approval_above_cents / 100
                                           if p.second_approval_above_cents is not None else None)}
 
@@ -1191,7 +1193,29 @@ def _product_out(p: LoanProduct) -> dict:
 def _product_rules(p: LoanProduct) -> appraisal.Product:
     return appraisal.Product(p.min_amount_cents, p.max_amount_cents, p.max_term_months, p.interest_rate_bps,
                              p.interest_method, p.deposits_multiplier_pct, p.min_membership_months,
-                             p.max_arrears_days, p.one_third_rule, p.guarantor_cover, p.min_guarantors)
+                             p.max_arrears_days, p.one_third_rule, p.guarantor_cover, p.min_guarantors,
+                             p.dividend_advance_pct)
+
+
+def open_advances(s: Session, p: LoanProduct, member_id: int, exclude_app_id: int | None = None) -> int:
+    """The member's other dividend advances of this product: being decided, approved, or disbursed and unpaid."""
+    if not p.dividend_advance_pct:
+        return 0
+    n = 0
+    for a in s.scalars(select(LoanApplication).where(
+            LoanApplication.institution_id == p.institution_id, LoanApplication.member_id == member_id,
+            LoanApplication.product_id == p.id, LoanApplication.id != (exclude_app_id or 0),
+            LoanApplication.status.in_(("submitted", "approved", "exported", "disbursed")))):
+        ln = s.get(Loan, a.disbursed_loan_id) if a.disbursed_loan_id else None
+        n += a.status != "disbursed" or ln is None or ln.status == "active"
+    return n
+
+
+def is_advance_loan(s: Session, loan: Loan) -> bool:
+    """True when this loan was disbursed from a dividend advance (which is never topped up)."""
+    return bool(s.scalar(select(LoanProduct.dividend_advance_pct).join(
+        LoanApplication, LoanApplication.product_id == LoanProduct.id).where(
+        LoanApplication.institution_id == loan.institution_id, LoanApplication.disbursed_loan_id == loan.id)))
 
 
 def _get_product(s: Session, institution_id: int, product_id: int) -> LoanProduct:
@@ -1251,7 +1275,8 @@ def _member_facts(s: Session, institution_id: int, member_no: str):
     loans = [appraisal.ExistingLoan(ln.loan_no, ln.balance_cents, ln.days_in_arrears)
              for ln in s.scalars(select(Loan).where(Loan.institution_id == institution_id, Loan.member_id == m.id,
                                                     Loan.status == "active"))]
-    return m, appraisal.MemberFacts(m.joined_on, m.deposits_cents, m.gross_pay_cents, m.net_pay_cents), loans
+    return m, appraisal.MemberFacts(m.joined_on, m.deposits_cents, m.gross_pay_cents, m.net_pay_cents,
+                                    m.last_dividend_cents), loans
 
 
 def _appraisal_out(a: appraisal.Appraisal) -> dict:
@@ -1274,6 +1299,7 @@ def appraisal_what_if(institution_id: int, body: WhatIfIn, s: Session = Depends(
     """Appraise a possible loan for a member without saving anything (no guarantors yet)."""
     p = _get_product(s, institution_id, body.product_id)
     m, facts, loans = _member_facts(s, institution_id, body.member_no)
+    facts.open_advances = open_advances(s, p, m.id)
     a = appraisal.appraise(_cents(body.amount_kes), body.term_months, _product_rules(p), facts, loans, [],
                            auth.utcnow().date())
     return {"member_no": m.member_no, "member": m.name, "product": p.code, **_appraisal_out(a)}
@@ -1314,6 +1340,7 @@ def _appraise_application(s: Session, a: LoanApplication) -> appraisal.Appraisal
     prod = s.get(LoanProduct, a.product_id)
     m = s.get(Member, a.member_id)
     _, facts, loans = _member_facts(s, a.institution_id, m.member_no)
+    facts.open_advances = open_advances(s, prod, m.id, a.id)
     return appraisal.appraise(a.amount_cents, a.term_months, _product_rules(prod), facts, loans,
                               _guarantees_for(s, a), auth.utcnow().date())
 
