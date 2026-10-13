@@ -79,12 +79,16 @@ def message(inst: Institution, m: Member, loan: Loan, st: Stage) -> str:
 GROUP_MEETING = range(8, 91)  # days behind: past a gentle reminder, before recovery
 
 
-def group_note(group, officer: str | None, m: Member, loan: Loan) -> str:
+def group_note(group, officer: str | None, m: Member, loan: Loan, own_loan: bool = False) -> str:
     """For the loan officer, not sent to anyone: in joint-liability lending the group is the guarantor, and its
     meeting is where a member's arrears are dealt with."""
     from ..groups_api import DAYS
 
     when = DAYS[group.meeting_day] if group.meeting_day is not None else "next"
+    if own_loan:
+        return (f"Raise at {group.name}'s {when} meeting ({group.group_no}): the group's own loan {loan.loan_no} is "
+                f"KES {loan.arrears_cents / 100:,.0f} behind, {loan.days_in_arrears} days. Every member is liable for it."
+                + (f" Officer: {officer}." if officer else ""))
     return (f"Raise at {group.name}'s {when} meeting ({group.group_no}): {m.name.title()} ({m.member_no}) is "
             f"KES {loan.arrears_cents / 100:,.0f} behind on loan {loan.loan_no}, {loan.days_in_arrears} days. "
             f"The group stands behind this loan." + (f" Officer: {officer}." if officer else ""))
@@ -94,7 +98,7 @@ def build_queue(s: Session, institution_id: int) -> dict:
     from ..models import GroupMember, LendingGroup, StaffUser
 
     inst = s.get(Institution, institution_id)
-    in_group = {gm.member_id: g for gm, g in s.execute(
+    in_group = {gm.member_id: (g, gm.role) for gm, g in s.execute(
         select(GroupMember, LendingGroup).join(LendingGroup, GroupMember.group_id == LendingGroup.id).where(
             GroupMember.institution_id == institution_id, GroupMember.left_on.is_(None),
             LendingGroup.status == "active"))}
@@ -111,10 +115,11 @@ def build_queue(s: Session, institution_id: int) -> dict:
     buckets: dict[str, dict] = {}
     for ln in loans:
         st = stage_for(ln.days_in_arrears)
-        group = in_group.get(ln.member_id)
-        if group and ln.days_in_arrears in GROUP_MEETING:
+        group, role = in_group.get(ln.member_id, (None, None))
+        if group and (ln.days_in_arrears in GROUP_MEETING or role == "group_account"):
             officer = s.get(StaffUser, group.officer_user_id).name if group.officer_user_id else None
-            channel, text = "group_meeting", group_note(group, officer, ln.member, ln)
+            channel = "group_meeting"
+            text = group_note(group, officer, ln.member, ln, own_loan=role == "group_account")
         else:
             channel, text = st.channel, message(inst, ln.member, ln, st)
         s.add(

@@ -670,12 +670,17 @@ def import_group_members(s: Session, institution_id: int, content) -> ImportResu
     for i, row in enumerate(read_rows(content), start=2):
         g = groups.get(pick(row, "group_no", "group_number", "group_code", "group_id").upper())
         m = members.get(pick(row, "member_no", "member_number", "memberno"))
-        role = (pick(row, "role", "position") or "member").strip().lower()
+        role = (pick(row, "role", "position") or "member").strip().lower().replace(" ", "_")
         if g is None or m is None:
             res.rejected.append(f"row {i}: unknown group or member")
             continue
-        if role not in ("member", "chair", "treasurer", "secretary"):
-            res.rejected.append(f"row {i}: {m.member_no} role '{role}' should be member, chair, treasurer or secretary")
+        if role not in ("member", "chair", "treasurer", "secretary", "group_account"):
+            res.rejected.append(f"row {i}: {m.member_no} role '{role}' should be member, chair, treasurer, secretary "
+                                f"or group account")
+            continue
+        if role == "group_account" and any(x.group_id == g.id and x.role == role and x.member_id != m.id
+                                           for x in current.values()):
+            res.rejected.append(f"row {i}: group {g.group_no} already has its own account")
             continue
         gm = current.get(m.id)
         if gm and gm.group_id != g.id:
