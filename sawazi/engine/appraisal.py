@@ -42,6 +42,7 @@ class MemberFacts:
     net_pay_cents: int | None
     last_dividend_cents: int | None = None
     open_advances: int = 0  # other dividend advances of this product not yet repaid (or still being decided)
+    insider: str | None = None  # board | supervisory | staff | related
 
 
 @dataclass
@@ -233,6 +234,13 @@ def appraise(amount_cents: int, term_months: int, product: Product, member: Memb
         if member.open_advances:
             checks.append(Check("one_advance", FAIL, "A dividend advance is already open: one at a time, "
                                                      "repaid from the dividend before another."))
+
+    # 8. Insider: never blocks; the policy decides, and the approvers must see it
+    if member.insider:
+        who = {"board": "a board member", "supervisory": "on the supervisory committee", "staff": "staff",
+               "related": "related to a board member or staff"}.get(member.insider, member.insider)
+        checks.append(Check("insider", WARN, f"Insider loan: the applicant is {who}. Follow the insider-lending "
+                                             f"policy and disclose it as SASRA requires."))
 
     statuses = {c.status for c in checks}
     outcome = "fails" if FAIL in statuses else "incomplete" if statuses & {UNKNOWN, PENDING} else "passes"

@@ -7,6 +7,7 @@ stopped (usually a payroll problem one phone call fixes).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -102,6 +103,9 @@ def build_queue(s: Session, institution_id: int) -> dict:
         select(GroupMember, LendingGroup).join(LendingGroup, GroupMember.group_id == LendingGroup.id).where(
             GroupMember.institution_id == institution_id, GroupMember.left_on.is_(None),
             LendingGroup.status == "active"))}
+    from ..oversight import open_promise_loans
+
+    promised = open_promise_loans(s, institution_id, date.today())
     s.query(Reminder).filter_by(institution_id=institution_id, status="queued").delete()
     loans = list(
         s.scalars(
@@ -113,6 +117,8 @@ def build_queue(s: Session, institution_id: int) -> dict:
         )
     )
     buckets: dict[str, dict] = {}
+    waiting = [ln for ln in loans if ln.id in promised]  # a promise is running: leave them be until its date
+    loans = [ln for ln in loans if ln.id not in promised]
     for ln in loans:
         st = stage_for(ln.days_in_arrears)
         group, role = in_group.get(ln.member_id, (None, None))
@@ -135,7 +141,7 @@ def build_queue(s: Session, institution_id: int) -> dict:
         b["loans"] += 1
         b["arrears_kes"] += ln.arrears_cents / 100
     s.commit()
-    return {"queued": len(loans), "by_stage": buckets}
+    return {"queued": len(loans), "by_stage": buckets, "waiting_on_promises": len(waiting)}
 
 
 def portfolio_at_risk(s: Session, institution_id: int) -> dict:

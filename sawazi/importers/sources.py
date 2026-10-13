@@ -109,6 +109,17 @@ _BAL_AS_OF = ("balances_as_at", "balance_date", "as_at", "as_of")
 _PAY_AS_OF = ("pay_date", "payroll_date", "pay_period_end")
 
 
+def _insider_kind(raw: str):
+    """board | supervisory | staff | related; None for "none"; False when unreadable."""
+    if raw in ("none", "no", "n", "-", "0"):
+        return None
+    for kind, words in (("supervisory", ("supervis",)), ("board", ("board", "director", "bod")),
+                        ("related", ("related", "relative", "family")), ("staff", ("staff", "employee"))):
+        if any(w in raw for w in words):
+            return kind
+    return False
+
+
 def _apply_member_figures(m: Member, row: dict, i: int, res: ImportResult) -> bool:
     """Set the figures this row actually gives. A blank cell (or a missing column) changes nothing.
     Returns True if anything was set."""
@@ -125,6 +136,14 @@ def _apply_member_figures(m: Member, row: dict, i: int, res: ImportResult) -> bo
         touched = True
         set_balance |= field in ("deposits_cents", "shares_cents")
         set_pay |= field in ("gross_pay_cents", "net_pay_cents")
+    raw = pick(row, "insider", "insider_type", "insider_category").strip().lower()
+    if raw:
+        kind = _insider_kind(raw)
+        if kind is False:
+            res.rejected.append(f"row {i}: {m.member_no} insider '{raw}' should be board, supervisory, staff, related "
+                                f"or none")
+        else:
+            m.insider, touched = kind, True
     raw = pick(row, *_JOINED)
     if raw:
         joined = to_date(raw)
@@ -318,6 +337,8 @@ def import_loans(s: Session, institution_id: int, content) -> ImportResult:
         ln.days_in_arrears = int(float(days_raw or 0))
         ln.disbursed_on = to_date(pick(row, "disbursed_on", "disbursement_date", "date_disbursed"))
         ln.next_due_on = to_date(pick(row, "next_due_on", "next_due_date", "due_date"))
+        ln.officer = (pick(row, "loan_officer", "officer", "credit_officer", "relationship_officer").strip()[:120]
+                      or ln.officer)
         via = pick(row, "repays_via", "repayment_mode", "mode").lower()
         ln.repays_via = "checkoff" if "check" in via else ("bank" if "bank" in via else "mpesa")
         core_status = pick(row, "status", "loan_status").lower()

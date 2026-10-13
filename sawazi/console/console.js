@@ -202,6 +202,8 @@ const VIEWS = {
   groups: { label: "Groups", group: "Lending", icon: "users", need: "read", render: viewGroups },
   recovery: { label: "Recovery", group: "Lending", icon: "flag", need: "read", render: viewRecovery },
   risk: { label: "Risk", group: "Oversight", icon: "shield", need: "read", render: viewRisk },
+  officers: { label: "Officers", group: "Oversight", icon: "users", need: "read", render: viewOfficers },
+  insiders: { label: "Insiders", group: "Oversight", icon: "key", need: "read", render: viewInsiders },
   board: { label: "Board pack", group: "Oversight", icon: "chart", need: "read", render: viewBoard },
   returns: { label: "Returns", group: "Oversight", icon: "file", need: "returns", render: viewReturns },
   upload: { label: "Upload", group: "Setup", icon: "upload", need: "reconcile", render: viewUpload },
@@ -508,10 +510,11 @@ function exceptionItem(e) {
 // ------------------------------------------------------------------ collections
 
 async function viewCollections() {
-  const [queued, failed, sent] = await Promise.all([
+  const [queued, failed, sent, promises] = await Promise.all([
     api(`${inst()}/reminders`, { params: { limit: 300 } }),
     api(`${inst()}/reminders`, { params: { limit: 300, status: "failed" } }),
     api(`${inst()}/sms`, { params: { limit: 50 } }),
+    api(`${inst()}/promises`),
   ]);
   const slot = h("div");
   const head = h("div", { class: "head" },
@@ -527,7 +530,7 @@ async function viewCollections() {
     });
     head.append(rebuild);
   }
-  return [head, slot, queuePanel("To do", queued), failed.length ? queuePanel("Failed to send", failed) : null, sentPanel(sent)];
+  return [head, slot, promisesPanel(promises), queuePanel("To do", queued), failed.length ? queuePanel("Failed to send", failed) : null, sentPanel(sent)];
 }
 
 function queuePanel(title, reminders) {
@@ -551,7 +554,8 @@ function queuePanel(title, reminders) {
           h("span", null, h("b", null, r.member), " ", h("span", { class: "num muted" }, r.member_no)),
           h("span", { class: `pill ch-${r.channel}` }, CHANNEL[r.channel] || r.channel)),
         h("div", { class: "meta num" }, `${r.loan_no} · ${r.days_in_arrears} days · ${kes(r.arrears_kes)} overdue${r.phone ? ` · ${r.phone}` : " · no phone"}`),
-        h("details", null, h("summary", { class: "small" }, r.sms_allowed ? "Message" : "Note"), h("div", { class: "msg" }, r.message))));
+        h("details", null, h("summary", { class: "small" }, r.sms_allowed ? "Message" : "Note"), h("div", { class: "msg" }, r.message)),
+        can("collections") ? promiseForm(r) : null));
   });
   sendBtn.addEventListener("click", async () => {
     const chosen = reminders.filter((r) => picked.has(r.id));
@@ -1973,4 +1977,71 @@ function networkPanel(net) {
         h("td", { class: "n" }, x.saccos_elsewhere), h("td", { class: "n" }, kes(x.pledged_elsewhere_kes)),
         h("td", { class: "n" }, h("b", null, kes(x.total_pledged_kes)))))))) : h("div", { class: "empty" }, "None of your guarantors guarantee at another network SACCO."),
     can("manage_users") ? h("div", { class: "pad" }, toggle()) : null);
+}
+
+// ------------------------------------------------------------------ promises to pay, officers, insiders
+
+const PROMISE = { open: ["Running", "warn"], kept: ["Kept", "ok"], part_paid: ["Part paid", "bad"], broken: ["Broken", "bad"], cancelled: ["Cancelled", "muted"] };
+
+function promiseForm(r) {
+  const amount = h("input", { type: "number", min: "1", step: "0.01", required: true, value: String(r.arrears_kes), "aria-label": "Amount promised" });
+  const due = h("input", { type: "date", required: true, "aria-label": "Promised by" });
+  const slot = h("div"), save = h("button", { type: "submit" }, "Save promise");
+  return h("details", null, h("summary", { class: "small" }, "Record a promise to pay"),
+    h("form", { class: "row-form", onsubmit: (e) => {
+      e.preventDefault();
+      busy(save, slot, async () => {
+        await api(`${inst()}/promises`, { method: "POST", body: { loan_no: r.loan_no, amount_kes: amount.value, due_on: due.value } });
+        route();
+      });
+    } }, h("label", null, "Amount (KES)", amount), h("label", null, "By", due), save, slot));
+}
+
+function promisesPanel(rows) {
+  if (!rows.length) return null;
+  const cancel = (p) => h("button", { type: "button", class: "link", onclick: async () => {
+    await api(`${inst()}/promises/${p.id}/cancel`, { method: "POST" }); route();
+  } }, "Cancel");
+  return h("section", { class: "panel" }, h("div", { class: "pad" }, h("h2", null, "Promises to pay"),
+    h("p", { class: "muted small" }, "Kept or broken is worked out from the payments allocated to the loan. While a promise is running the loan stays out of the queue.")),
+    h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Member"), h("th", null, "Loan"), h("th", { class: "n" }, "Promised"), h("th", { class: "n" }, "Paid"), h("th", null, "By"), h("th", null, ""), h("th", null, ""))),
+      h("tbody", null, rows.map((p) => h("tr", null, h("td", null, p.member, " ", h("span", { class: "num muted" }, p.member_no)),
+        h("td", { class: "num" }, p.loan_no), h("td", { class: "n" }, kes(p.amount_kes)), h("td", { class: "n" }, kes(p.paid_kes)),
+        h("td", { class: "small" }, p.due_on), h("td", null, h("span", { class: `pill out-${PROMISE[p.state][1]}` }, PROMISE[p.state][0])),
+        h("td", null, p.state === "open" && can("collections") ? cancel(p) : null)))))));
+}
+
+async function viewOfficers() {
+  const rows = await api(`${inst()}/officers`);
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Loan officers"),
+      h("p", { class: "muted" }, "Each officer's book, as the core system's loans export assigns it (a Loan Officer column). Worst PAR first. Promises cover the last 90 days."))),
+    h("section", { class: "panel" }, rows.length ? h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Officer"), h("th", { class: "n" }, "Loans"), h("th", { class: "n" }, "Outstanding"), h("th", { class: "n" }, "Arrears"),
+        h("th", { class: "n" }, "PAR 30"), h("th", { class: "n" }, "Collected this month"), h("th", { class: "n" }, "Promises kept / broken / running"))),
+      h("tbody", null, rows.map((o) => h("tr", null, h("td", null, o.officer || h("span", { class: "muted" }, "Not assigned")),
+        h("td", { class: "n" }, o.loans), h("td", { class: "n" }, kes(o.outstanding_kes)), h("td", { class: "n" }, kes(o.arrears_kes)),
+        h("td", { class: "n" }, o.par30_pct > 5 ? h("span", { class: "bad" }, pct(o.par30_pct)) : pct(o.par30_pct)),
+        h("td", { class: "n" }, kes(o.collected_this_month_kes)),
+        h("td", { class: "n" }, `${o.promises_kept} / ${o.promises_broken} / ${o.promises_open}`))))))
+      : h("div", { class: "empty" }, "No active loans.")),
+  ];
+}
+
+async function viewInsiders() {
+  const r = await api(`${inst()}/insiders`);
+  const total = r.loans.reduce((a, x) => a + x.balance_kes, 0);
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Insider loans"),
+      h("p", { class: "muted" }, `Loans to board and supervisory committee members, staff and people related to them (an Insider column in the members export). ${r.insiders} insiders flagged; ${r.loans.length} loans worth ${kes(total)}.`))),
+    h("section", { class: "panel" }, r.loans.length ? h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Member"), h("th", null, "Insider"), h("th", null, "Loan"), h("th", { class: "n" }, "Balance"), h("th", { class: "n" }, "Arrears"), h("th", { class: "n" }, "Days"))),
+      h("tbody", null, r.loans.map((x) => h("tr", null, h("td", null, x.member, " ", h("span", { class: "num muted" }, x.member_no)),
+        h("td", { class: "small" }, x.insider), h("td", null, h("span", { class: "num" }, x.loan_no), h("div", { class: "muted small" }, x.product)),
+        h("td", { class: "n" }, kes(x.balance_kes)), h("td", { class: "n" }, x.arrears_kes ? h("span", { class: "bad" }, kes(x.arrears_kes)) : kes(0)),
+        h("td", { class: "n" }, x.days_in_arrears))))))
+      : h("div", { class: "empty" }, "No insider has an active loan, or no insiders are flagged yet.")),
+    h("p", { class: "muted small" }, "Sawazi lists these for the board and the auditors; your insider-lending policy and SASRA's rules decide what is allowed."),
+  ];
 }

@@ -1276,7 +1276,7 @@ def _member_facts(s: Session, institution_id: int, member_no: str):
              for ln in s.scalars(select(Loan).where(Loan.institution_id == institution_id, Loan.member_id == m.id,
                                                     Loan.status == "active"))]
     return m, appraisal.MemberFacts(m.joined_on, m.deposits_cents, m.gross_pay_cents, m.net_pay_cents,
-                                    m.last_dividend_cents), loans
+                                    m.last_dividend_cents, insider=m.insider), loans
 
 
 def _appraisal_out(a: appraisal.Appraisal) -> dict:
@@ -2090,12 +2090,14 @@ def root():
 from .groups_api import router as groups_router  # noqa: E402  (after the app exists)
 from .member_api import router as member_router  # noqa: E402
 from .network import router as network_router  # noqa: E402
+from .oversight import router as oversight_router  # noqa: E402
 from .recovery_api import router as recovery_router  # noqa: E402
 
 app.include_router(member_router)
 app.include_router(groups_router)
 app.include_router(recovery_router)
 app.include_router(network_router)
+app.include_router(oversight_router)
 app.mount("/console", StaticFiles(directory=CONSOLE_DIR, html=True), name="console")
 app.mount("/app", StaticFiles(directory=APP_DIR, html=True), name="member_app")
 app.mount("/site", StaticFiles(directory=SITE_DIR), name="site")

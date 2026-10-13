@@ -61,6 +61,7 @@ class Member(Base):
     net_pay_cents: Mapped[int | None] = mapped_column(BigInteger)  # monthly take-home after all deductions
     pay_as_of: Mapped[date | None] = mapped_column(Date)
     last_dividend_cents: Mapped[int | None] = mapped_column(BigInteger)  # dividend (and interest rebate) last paid
+    insider: Mapped[str | None] = mapped_column(String(20))  # board | supervisory | staff | related (oversight.INSIDERS)
 
     loans: Mapped[list[Loan]] = relationship(back_populates="member")
 
@@ -86,6 +87,7 @@ class Loan(Base):
     disbursed_on: Mapped[date | None] = mapped_column(Date)
     next_due_on: Mapped[date | None] = mapped_column(Date)
     repays_via: Mapped[str] = mapped_column(String(20), default="mpesa")  # mpesa | checkoff | bank
+    officer: Mapped[str | None] = mapped_column(String(120))  # loan officer, as the core system names them
     status: Mapped[str] = mapped_column(String(20), default="active")  # active | closed | written_off
 
     member: Mapped[Member] = relationship(back_populates="loans")
@@ -684,3 +686,21 @@ class RecoveryGuarantor(Base):
     used_on: Mapped[date] = mapped_column(Date)
     refunded_cents: Mapped[int] = mapped_column(BigInteger, default=0)
     refunded_on: Mapped[date | None] = mapped_column(Date)
+
+
+class PromiseToPay(Base):
+    """A member's promise to pay an amount on a loan by a date. Kept or broken is worked out from the payments
+    allocated to the loan, never typed in."""
+
+    __tablename__ = "promises_to_pay"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    loan_id: Mapped[int] = mapped_column(ForeignKey("loans.id"), index=True)
+    amount_cents: Mapped[int] = mapped_column(BigInteger)
+    made_on: Mapped[date] = mapped_column(Date)
+    due_on: Mapped[date] = mapped_column(Date)
+    note: Mapped[str | None] = mapped_column(String(500))
+    recorded_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("staff_users.id"))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime)

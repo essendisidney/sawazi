@@ -53,8 +53,10 @@ def _groups(s: Session, institution_id: int) -> dict:
     o = overview(s, institution_id)
     from .recovery_api import figures
 
-    r = figures(s, institution_id)
-    return ({"groups": o} if o else {}) | ({"recovery": r} if r else {})  # older snapshots have neither entry
+    from .oversight import insider_figures
+
+    r, ins = figures(s, institution_id), insider_figures(s, institution_id)
+    return ({"groups": o} if o else {}) | ({"recovery": r} if r else {}) | ({"insiders": ins} if ins else {})
 
 
 def take_snapshot(s: Session, institution_id: int, as_of: date | None = None) -> PortfolioSnapshot:
@@ -214,6 +216,11 @@ def _summary(d: dict) -> list[str]:
         if grp and grp["groups_behind"]:
             out.append(f"{grp['groups_behind']} of {grp['groups']} borrowing group(s) have members behind: "
                        f"{kes(grp['arrears_cents'])} in arrears that their whole group stands behind.")
+        ins = cur.figures.get("insiders")
+        if ins:
+            out.append(f"{ins['loans']} insider loan(s) (board, committee, staff and related) with "
+                       f"{kes(ins['balance_cents'])} outstanding" + (f"; {ins['behind']} are behind." if ins["behind"]
+                                                                     else "; none is behind."))
         rec = cur.figures.get("recovery")
         if rec and (rec["open"] or rec["refund_due_cents"]):
             out.append(f"{rec['open']} defaulted loan(s) in recovery, {rec['with_agent']} with a debt collector or "
