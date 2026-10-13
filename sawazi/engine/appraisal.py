@@ -31,6 +31,7 @@ class Product:
     one_third_rule: bool = True
     guarantor_cover: str = "above_deposits"
     min_guarantors: int = 0
+    dividend_advance_pct: int | None = None  # set: an advance of up to this % of the last dividend
 
 
 @dataclass
@@ -39,6 +40,8 @@ class MemberFacts:
     deposits_cents: int | None
     gross_pay_cents: int | None
     net_pay_cents: int | None
+    last_dividend_cents: int | None = None
+    open_advances: int = 0  # other dividend advances of this product not yet repaid (or still being decided)
 
 
 @dataclass
@@ -215,6 +218,21 @@ def appraise(amount_cents: int, term_months: int, product: Product, member: Memb
         if not enough_people:
             short.append(f"{product.min_guarantors - len(accepted)} more guarantor(s)")
         checks.append(Check("guarantors", FAIL, f"Needs {' and '.join(short)}."))
+
+    # 7. Dividend advance: a share of the last dividend, one at a time
+    if product.dividend_advance_pct:
+        if member.last_dividend_cents is None:
+            checks.append(Check("dividend", UNKNOWN, "Last dividend not known: upload member balances with it."))
+            limits["dividend"] = None
+        else:
+            cap = member.last_dividend_cents * product.dividend_advance_pct // 100
+            limits["dividend"] = cap
+            checks.append(Check("dividend", PASS if amount_cents <= cap else FAIL,
+                                f"{product.dividend_advance_pct}% of the last dividend of "
+                                f"{kes(member.last_dividend_cents)} allows up to {kes(cap)}."))
+        if member.open_advances:
+            checks.append(Check("one_advance", FAIL, "A dividend advance is already open: one at a time, "
+                                                     "repaid from the dividend before another."))
 
     statuses = {c.status for c in checks}
     outcome = "fails" if FAIL in statuses else "incomplete" if statuses & {UNKNOWN, PENDING} else "passes"

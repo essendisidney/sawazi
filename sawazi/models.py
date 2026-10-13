@@ -58,6 +58,7 @@ class Member(Base):
     gross_pay_cents: Mapped[int | None] = mapped_column(BigInteger)  # monthly, from payslip / payroll
     net_pay_cents: Mapped[int | None] = mapped_column(BigInteger)  # monthly take-home after all deductions
     pay_as_of: Mapped[date | None] = mapped_column(Date)
+    last_dividend_cents: Mapped[int | None] = mapped_column(BigInteger)  # dividend (and interest rebate) last paid
 
     loans: Mapped[list[Loan]] = relationship(back_populates="member")
 
@@ -374,6 +375,8 @@ class LoanProduct(Base):
     guarantor_cover: Mapped[str] = mapped_column(String(20))  # above_deposits | full | none
     min_guarantors: Mapped[int] = mapped_column(Integer)
     second_approval_above_cents: Mapped[int | None] = mapped_column(BigInteger)  # two approvers above this
+    # A dividend advance: up to this % of the member's last dividend, repaid from the next one. None = not one.
+    dividend_advance_pct: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime)
     updated_at: Mapped[datetime] = mapped_column(DateTime)
 

@@ -102,6 +102,7 @@ _FIGURES = {
     "shares_cents": ("share_capital", "shares", "share_balance"),
     "gross_pay_cents": ("gross_pay", "gross_salary", "gross"),
     "net_pay_cents": ("net_pay", "net_salary", "take_home", "net"),
+    "last_dividend_cents": ("last_dividend", "dividend", "dividends", "dividend_paid", "last_dividend_paid"),
 }
 _JOINED = ("date_joined", "joined_on", "joined", "registration_date", "date_registered", "membership_date")
 _BAL_AS_OF = ("balances_as_at", "balance_date", "as_at", "as_of")

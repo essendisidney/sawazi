@@ -41,6 +41,10 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
    guarantor view of each backed loan's state only (never its figures), top-up requests (`top_up_loan_id`)
 5. Pilot polish DONE: staff choose their own password after anyone else set it (`must_change_password`, enforced in
    `auth.current_principal`); institutions can be marked `is_demo` (banner in console and app)
+6. Dividend advance DONE: a loan product with `dividend_advance_pct` lends up to that % of the member's last dividend
+   (`last_dividend_cents`, members / member_balances column "Last Dividend"; unknown is never a pass). One open
+   advance per product (`api.open_advances`), never topped up (`api.is_advance_loan`); set guarantor cover none and
+   max arrears 0. The core recovers it from the dividend; Sawazi sees it close on the next loans upload
 
 ## Phase 4 — MFI group lending (started)
 - Joint liability (Sidney's answer): members borrow individually, the whole group stands behind every loan; groups meet
