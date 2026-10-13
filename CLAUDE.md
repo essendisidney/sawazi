@@ -59,7 +59,11 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
   `group_cash` payment allocated to their loan
 - Money paid to a group's number goes to suspense ("paid to group X's account"); staff split it across members with
   shares that must add up exactly (`/exceptions/{id}/split`), never guessed
-- Next: group arrears in the Risk view and board pack; group loan products if a pilot MFI lends to groups as a whole
+- Guarantee network DONE (`sawazi/network.py`, Risk page): SACCOs opt in (admin, audited, with the reference of the
+  consent / DPA that allows sharing). For their own guarantors they see the count of other network SACCOs and the
+  total pledged there; never which SACCOs, never arrears (credit reference business). Linked by ID number only
+  (`network.id_key`); demo institutions only see demos
+- Group arrears in the Risk view and board pack DONE; next: group loan products if a pilot MFI lends to groups as a whole
 
 ## Phase 2 — done
 1. Member balances and pay DONE (members export columns + `member_balances` import; unknown is never zero)
