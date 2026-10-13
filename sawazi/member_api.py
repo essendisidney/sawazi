@@ -483,7 +483,10 @@ def my_guarantees(me: SignedIn = Depends(current_member), s: Session = Depends(g
                      "loan_no": loan.loan_no if loan else f"application SWZ-{a.id}",
                      "status": guarantors.effective_status(g)})
     free = guarantors.free_capacity(s, m)
-    return {"waiting": waiting, "giving": giving, "mine": mine,
+    from .recovery_api import for_guarantor
+
+    used = [r | {"for": _short_name(r["for"])} for r in for_guarantor(s, m)]
+    return {"waiting": waiting, "giving": giving, "mine": mine, "deposits_used": used,
             "pledged_kes": guarantors.pledged_cents(s, m.institution_id, m.id) / 100,
             "can_still_guarantee_kes": None if free is None else max(free, 0) / 100}
 

@@ -33,6 +33,9 @@ const T = {
     declineQ: "Decline this request?", cancel: "Cancel", youGuarantee: "You guarantee", yourGuarantors: "Your guarantors",
     canStill: "You can still guarantee", none: "None.", apply: "Apply for a loan", product: "Loan type", amount: "Amount (KES)",
     months: "Months", check: "Check", guide: "This is a guide, not a decision. Your SACCO decides.", instalmentEst: "About",
+    depositsUsed: "Your deposits used for loans you guaranteed", used: "Used", refunded: "Refunded",
+    stillRecovering: "the SACCO is still recovering the loan", askSacco: "ask your SACCO about the rest",
+    refundRule: "When the SACCO recovers the loan, your deposits are refunded first.",
     advUpTo: "up to", perMonth: "a month", upTo: "You may qualify for up to", couldBeLower: "could be lower: some figures are missing",
     needCover: "Guarantors needed for", purpose: "What is it for?", gNos: "Guarantors' member numbers (optional)",
     gHint: "Separate with commas. The SACCO will ask them.", send: "Send application", yourApps: "Your applications",
@@ -64,6 +67,9 @@ const T = {
     declineQ: "Ukatae ombi hili?", cancel: "Ghairi", youGuarantee: "Unadhamini", yourGuarantors: "Wadhamini wako",
     canStill: "Bado unaweza kudhamini", none: "Hakuna.", apply: "Omba mkopo", product: "Aina ya mkopo", amount: "Kiasi (KES)",
     months: "Miezi", check: "Angalia", guide: "Huu ni mwongozo tu, si uamuzi. SACCO yako ndiyo inaamua.", instalmentEst: "Takriban",
+    depositsUsed: "Akiba zako zilizotumika kwa mikopo uliyodhamini", used: "Imetumika", refunded: "Imerudishwa",
+    stillRecovering: "chama bado kinarejesha mkopo", askSacco: "uliza chama chako kuhusu kiasi kilichobaki",
+    refundRule: "Chama kikirejesha mkopo, akiba zako zinarudishwa kwanza.",
     advUpTo: "hadi", perMonth: "kwa mwezi", upTo: "Unaweza kustahili hadi", couldBeLower: "huenda ikawa chini: baadhi ya taarifa hazipo",
     needCover: "Wadhamini wanahitajika kwa", purpose: "Ni wa kufanyia nini?", gNos: "Nambari za uanachama za wadhamini (si lazima)",
     gHint: "Tenganisha kwa koma. SACCO itawaomba.", send: "Tuma ombi", yourApps: "Maombi yako",
@@ -367,6 +373,12 @@ async function viewGuarantees() {
     h("section", { class: "card" }, h("div", { class: "row" }, h("h2", null, t("youGuarantee")), h("b", { class: "num" }, kes(g.pledged_kes))),
       list(g.giving, "for"), h("p", { class: "muted small" }, `${t("canStill")}: ${kes(g.can_still_guarantee_kes)}`)),
     h("section", { class: "card" }, h("h2", null, t("yourGuarantors")), list(g.mine, "by")),
+    g.deposits_used && g.deposits_used.length ? h("section", { class: "card" }, h("h2", null, t("depositsUsed")),
+      h("div", { class: "list" }, g.deposits_used.map((r) => h("div", { class: "item" },
+        h("span", { class: "grow" }, r.for, h("div", { class: "muted small" }, `${t("used")} ${kes(r.used_kes)} · ${day(r.used_on)}`),
+          h("div", { class: "small" }, r.refunded_kes >= r.used_kes ? h("span", { class: "chip ok" }, `${t("refunded")} ${day(r.refunded_on)}`)
+            : `${t("refunded")} ${kes(r.refunded_kes)} · ${r.being_recovered ? t("stillRecovering") : t("askSacco")}`))))),
+      h("p", { class: "muted small" }, t("refundRule"))) : null,
   ];
 }
 
