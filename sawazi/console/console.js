@@ -196,6 +196,7 @@ const VIEWS = {
   dashboard: { label: "Dashboard", group: "Today", icon: "home", need: "read", render: viewDashboard },
   suspense: { label: "Suspense", group: "Today", icon: "inbox", need: "read", render: viewSuspense, badge: () => state.counts?.suspense },
   exceptions: { label: "Exceptions", group: "Today", icon: "flag", need: "read", render: viewExceptions, badge: () => state.counts?.other },
+  employers: { label: "Employers", group: "Today", icon: "file", need: "read", render: viewEmployers },
   collections: { label: "Collections", group: "Today", icon: "phone", need: "read", render: viewCollections },
   loans: { label: "Loans", group: "Lending", icon: "cash", need: "read", render: viewLoans },
   products: { label: "Products", group: "Lending", icon: "layers", need: "read", render: viewProducts },
@@ -204,6 +205,7 @@ const VIEWS = {
   risk: { label: "Risk", group: "Oversight", icon: "shield", need: "read", render: viewRisk },
   officers: { label: "Officers", group: "Oversight", icon: "users", need: "read", render: viewOfficers },
   insiders: { label: "Insiders", group: "Oversight", icon: "key", need: "read", render: viewInsiders },
+  integrity: { label: "Integrity", group: "Oversight", icon: "shield", need: "read", render: viewIntegrity },
   board: { label: "Board pack", group: "Oversight", icon: "chart", need: "read", render: viewBoard },
   returns: { label: "Returns", group: "Oversight", icon: "file", need: "returns", render: viewReturns },
   upload: { label: "Upload", group: "Setup", icon: "upload", need: "reconcile", render: viewUpload },
@@ -366,13 +368,15 @@ async function viewDashboard() {
 // ------------------------------------------------------------------ suspense clearing
 
 async function viewSuspense() {
-  const items = await api(`${inst()}/exceptions`, { params: { kind: "suspense" } });
+  const [items, age] = await Promise.all([api(`${inst()}/exceptions`, { params: { kind: "suspense" } }), api(`${inst()}/suspense/ageing`)]);
   const total = items.reduce((n, e) => n + e.amount_kes, 0);
   return [
     h("div", { class: "head" },
       h("div", { class: "stack" }, h("h1", null, "Suspense"),
         h("p", { class: "muted" }, "Payments Sawazi could not match with confidence. Check each one and clear it to the right member. Clearing allocates the money and is recorded against your name.")),
       h("span", { class: "num muted" }, `${items.length} · ${kes(total)}`)),
+    items.length ? h("div", { class: "kpis" }, age.buckets.map((b, i) => h("div", { class: "kpi" }, h("span", { class: "eyebrow" }, b.label),
+      h("span", { class: i >= 2 && b.count ? "v bad" : "v" }, String(b.count)), h("span", { class: "s" }, kes(b.kes))))) : null,
     items.length === 0 ? h("div", { class: "panel empty" }, "No payments in suspense.") :
       h("div", { class: "panel list" }, items.map(suspenseItem)),
   ];
@@ -1981,7 +1985,7 @@ function networkPanel(net) {
 
 // ------------------------------------------------------------------ promises to pay, officers, insiders
 
-const PROMISE = { open: ["Running", "warn"], kept: ["Kept", "ok"], part_paid: ["Part paid", "bad"], broken: ["Broken", "bad"], cancelled: ["Cancelled", "muted"] };
+const PROMISE = { open: ["Running", "incomplete"], kept: ["Kept", "passes"], part_paid: ["Part paid", "fails"], broken: ["Broken", "fails"], cancelled: ["Cancelled", "none"] };
 
 function promiseForm(r) {
   const amount = h("input", { type: "number", min: "1", step: "0.01", required: true, value: String(r.arrears_kes), "aria-label": "Amount promised" });
@@ -2043,5 +2047,43 @@ async function viewInsiders() {
         h("td", { class: "n" }, x.days_in_arrears))))))
       : h("div", { class: "empty" }, "No insider has an active loan, or no insiders are flagged yet.")),
     h("p", { class: "muted small" }, "Sawazi lists these for the board and the auditors; your insider-lending policy and SASRA's rules decide what is allowed."),
+  ];
+}
+
+// ------------------------------------------------------------------ employers, integrity
+
+async function viewEmployers() {
+  const rows = await api(`${inst()}/employers`);
+  const cell = (m) => h("td", { class: "n small" }, m.gap_kes > 0 ? h("span", { class: "bad" }, `−${kes(m.gap_kes)}`) : "full",
+    m.days_late ? h("div", { class: m.days_late > 10 ? "bad" : "muted" }, `${m.days_late} days late`) : null,
+    m.members_left_off ? h("div", { class: "muted" }, `${m.members_left_off} left off`) : null);
+  const periods = [...new Set(rows.flatMap((e) => e.months.map((m) => m.period)))].sort().reverse().slice(0, 6);
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Employers"),
+      h("p", { class: "muted" }, "Check-off by employer: what the schedule expected against what was remitted, members left off, and how late the money arrived (after the month's end). Biggest shortfall first."))),
+    h("section", { class: "panel" }, rows.length ? h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Employer"), periods.map((p) => h("th", { class: "n" }, p)))),
+      h("tbody", null, rows.map((e) => h("tr", null, h("td", null, h("b", null, e.employer),
+        h("div", { class: "muted small" }, `${e.months_short} of ${e.months.length} months short · ${e.months_late} late`)),
+        periods.map((p) => { const m = e.months.find((x) => x.period === p); return m ? cell(m) : h("td", { class: "n muted" }, "—"); }))))))
+      : h("div", { class: "empty" }, "No check-off uploaded yet.")),
+  ];
+}
+
+async function viewIntegrity() {
+  const r = await api(`${inst()}/integrity`);
+  const sev = { high: "out-fails", medium: "out-incomplete", low: "out-passes" };
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Integrity checks"),
+      h("p", { class: "muted" }, `Things worth a second look from the last ${r.days} days. Prompts for a person, not conclusions: a shared phone is often a family.`))),
+    h("section", { class: "panel" }, r.findings.length ? h("div", { class: "list" }, r.findings.map((f) => h("div", { class: "item" },
+      h("span", { class: `pill ${sev[f.severity]}` }, f.severity), h("span", { class: "grow" }, f.message))))
+      : h("div", { class: "empty" }, "Nothing to look at.")),
+    h("section", { class: "panel" }, h("div", { class: "pad" }, h("h2", null, "Approvals over failed or unknown checks")),
+      r.approvers.length ? h("div", { class: "tbl-wrap" }, h("table", null,
+        h("thead", null, h("tr", null, h("th", null, "Approver"), h("th", { class: "n" }, "Approved"), h("th", { class: "n" }, "Over failed checks"), h("th", { class: "n" }, "Share"))),
+        h("tbody", null, r.approvers.map((a) => h("tr", null, h("td", null, a.approver), h("td", { class: "n" }, a.approved),
+          h("td", { class: "n" }, a.overrides), h("td", { class: "n" }, a.override_pct >= 30 ? h("span", { class: "bad" }, pct(a.override_pct)) : pct(a.override_pct)))))))
+        : h("div", { class: "empty" }, "No approvals in this period.")),
   ];
 }

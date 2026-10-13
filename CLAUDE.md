@@ -52,6 +52,10 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
    allocated to the loan, never typed in; a running promise keeps the loan out of the collections queue. Officer
    books from the loans export's Loan Officer column. Insiders (members export "Insider": board, supervisory, staff,
    related) get a WARN appraisal check, a console page and a board pack line; Sawazi never decides the policy
+9. Early warnings DONE (`sawazi/watch.py`, read-only, no tables): employer check-off scorecard (gap, members left
+   off, days late after month end), suspense ageing (by payment date), integrity checks (duplicate ID numbers, phones
+   on 3+ members, approval overrides per approver and quick overrides, suspense cleared to insiders, after-hours
+   clearances). Findings are prompts for a person, never conclusions; board pack In brief lines
 
 ## Phase 4 — MFI group lending (started)
 - Joint liability (Sidney's answer): members borrow individually, the whole group stands behind every loan; groups meet
