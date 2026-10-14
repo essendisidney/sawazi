@@ -95,6 +95,9 @@ SWAHILI: list[tuple[str, str]] = [
      "Una maombi ambayo bado yanaangaliwa. Tafadhali subiri hayo kwanza."),
     (r"That is not one of your active loans\.", "Huo si mmoja wa mikopo yako inayoendelea."),
     (r"A dividend advance cannot be topped up\.", "Mkopo wa mapema wa gawio hauwezi kuongezwa."),
+    (r"Choose a date within the next 60 days\.", "Chagua tarehe ndani ya siku 60 zijazo."),
+    (r"You already promised a payment on this loan\.", "Tayari umeahidi malipo kwa mkopo huu."),
+    (r"Thank you\. Your SACCO has your promise\.", "Asante. Chama chako kimepokea ahadi yako."),
     (r"Choose up to 12 months\.", "Chagua hadi miezi 12."),
     (r"(\S+) is not another member of your SACCO\. Check the member number\.",
      r"\1 si mwanachama mwingine wa SACCO yako. Angalia nambari ya uanachama."),
@@ -402,6 +405,7 @@ def overview(me: SignedIn = Depends(current_member), s: Session = Depends(get_se
                                                     Allocation.transaction_id.in_([t.id for t in pays]))):
             split.setdefault(a.transaction_id, []).append({"to": a.target, "kes": a.amount_cents / 100})
     paybill = inst.paybill if inst else None
+    promises = _my_promises(s, m, loans)
     return {
         "member": _member_out(s, m),
         "deposits_kes": _kes(m.deposits_cents), "shares_kes": _kes(m.shares_cents),
@@ -409,11 +413,64 @@ def overview(me: SignedIn = Depends(current_member), s: Session = Depends(get_se
         "loans": [{"loan_no": ln.loan_no, "product": ln.product, "balance_kes": ln.balance_cents / 100,
                    "arrears_kes": ln.arrears_cents / 100, "days_in_arrears": ln.days_in_arrears,
                    "installment_kes": ln.installment_cents / 100, "next_due_on": ln.next_due_on,
-                   "pay": {"paybill": paybill, "account": ln.loan_no}} for ln in loans],
+                   "pay": {"paybill": paybill, "account": ln.loan_no},
+                   "promise": promises.get(ln.id)} for ln in loans],
         "pay_deposits": {"paybill": paybill, "account": m.member_no},
         "payments": [{"date": t.txn_time, "source": t.source, "reference": t.reference, "kes": t.amount_cents / 100,
                       "split": split.get(t.id, [])} for t in pays],
     }
+
+
+def _my_promises(s: Session, m: Member, loans) -> dict:
+    """The latest promise on each loan from the last 60 days, unless cancelled."""
+    from .models import PromiseToPay
+    from .oversight import promise_state
+
+    today, out = utcnow().date(), {}
+    ids = [ln.id for ln in loans]
+    if not ids:
+        return out
+    for p in s.scalars(select(PromiseToPay).where(PromiseToPay.institution_id == m.institution_id,
+                                                  PromiseToPay.loan_id.in_(ids), PromiseToPay.cancelled_at.is_(None),
+                                                  PromiseToPay.made_on >= today - timedelta(days=60))
+                       .order_by(PromiseToPay.id)):
+        state, paid = promise_state(s, p, today)
+        out[p.loan_id] = {"kes": p.amount_cents / 100, "by": p.due_on, "paid_kes": paid / 100, "state": state}
+    return out
+
+
+class PromiseIn(BaseModel):
+    loan_no: str = Field(min_length=1, max_length=40)
+    amount_kes: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    due_on: date
+
+
+@router.post("/m/promises")
+def promise(body: PromiseIn, me: SignedIn = Depends(current_member), s: Session = Depends(get_session)):
+    """The member says when they will pay what is overdue. Staff see it on Collections, and the reminders stop until
+    the date; whether it was kept is worked out from the payments that arrive."""
+    from .models import Loan, PromiseToPay
+    from .oversight import MAX_PROMISE_DAYS, open_promise_loans
+
+    m, today = me.member, utcnow().date()
+    ln = s.scalar(select(Loan).where(Loan.institution_id == m.institution_id, Loan.member_id == m.id,
+                                     Loan.loan_no == body.loan_no.strip(), Loan.status == "active"))
+    if ln is None:
+        raise HTTPException(422, "That is not one of your active loans.")
+    if not today <= body.due_on <= today + timedelta(days=MAX_PROMISE_DAYS):
+        raise HTTPException(422, "Choose a date within the next 60 days.")
+    if ln.id in open_promise_loans(s, m.institution_id, today):
+        raise HTTPException(409, "You already promised a payment on this loan.")
+    p = PromiseToPay(institution_id=m.institution_id, loan_id=ln.id, amount_cents=int(body.amount_kes * 100),
+                     made_on=today, due_on=body.due_on, note="from the member app", recorded_by_user_id=None,
+                     created_at=utcnow())
+    s.add(p)
+    s.flush()
+    audit.record(s, me.principal, "promise.record", "promise", p.id,
+                 after={"loan_no": ln.loan_no, "amount_cents": p.amount_cents, "due_on": str(p.due_on),
+                        "source": "member_app"})
+    s.commit()
+    return {"message": "Thank you. Your SACCO has your promise."}
 
 
 # ---------------------------------------------------------------- guarantees

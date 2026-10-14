@@ -194,6 +194,7 @@ function renderOwnPassword() {
 
 const VIEWS = {
   dashboard: { label: "Dashboard", group: "Today", icon: "home", need: "read", render: viewDashboard },
+  myday: { label: "My day", group: "Today", icon: "check", need: "read", render: viewMyDay },
   suspense: { label: "Suspense", group: "Today", icon: "inbox", need: "read", render: viewSuspense, badge: () => state.counts?.suspense },
   exceptions: { label: "Exceptions", group: "Today", icon: "flag", need: "read", render: viewExceptions, badge: () => state.counts?.other },
   employers: { label: "Employers", group: "Today", icon: "file", need: "read", render: viewEmployers },
@@ -214,6 +215,7 @@ const VIEWS = {
   upload: { label: "Upload", group: "Setup", icon: "upload", need: "reconcile", render: viewUpload },
   rules: { label: "Allocation rules", group: "Setup", icon: "split", need: "read", render: viewRules },
   admin: { label: "Admin", group: "Setup", icon: "key", need: "manage_users", render: viewAdmin },
+  quality: { label: "Data quality", group: "Setup", icon: "file", need: "read", render: viewQuality },
 };
 
 // Line icons (24px grid, drawn with strokes). Built as SVG elements, never parsed from a string of markup.
@@ -225,6 +227,7 @@ const ICONS = {
   cash: ["M3 6h18v12H3z", "M12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5", "M6 9v.01M18 15v.01"],
   layers: ["M12 3 3 8l9 5 9-5z", "M3 13l9 5 9-5"],
   shield: ["M12 3 4 6v6c0 4.5 3.4 7.7 8 9 4.6-1.3 8-4.5 8-9V6z", "M9 12l2 2 4-4"],
+  check: ["M5 12.5l4.5 4.5L19 7.5"],
   chart: ["M4 20V10", "M10 20V4", "M16 20v-7", "M22 20H2"],
   file: ["M6 3h8l4 4v14H6z", "M14 3v4h4", "M9 12h6M9 16h6"],
   upload: ["M12 16V4", "M7 9l5-5 5 5", "M4 16v4h16v-4"],
@@ -2147,5 +2150,41 @@ async function viewCoaching() {
         h("div", { class: "muted small" }, `${r.times} payments cleared by hand · ${r.phone || "no phone"} · should use account ${r.account}`),
         h("div", { class: "msg small" }, r.message)),
       copy(r.message)))) : h("div", { class: "empty" }, "No member has needed this twice.")),
+  ];
+}
+
+// ------------------------------------------------------------------ my day, data quality
+
+async function viewMyDay() {
+  const d = await api(`${inst()}/my-day`);
+  const block = (title, rows, render, empty) => h("section", { class: "panel" }, h("div", { class: "pad" }, h("h2", null, `${title} (${rows.length})`)),
+    rows.length ? h("div", { class: "list" }, rows.map((r) => h("div", { class: "item" }, ...[].concat(render(r))))) : h("div", { class: "empty" }, empty));
+  const app = (x) => h("a", { href: `#/loans/${x.id}` }, x.ref);
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, `My day, ${d.name}`),
+      h("p", { class: "muted" }, "Your promises falling due, applications, decisions waiting, groups meeting today and loans in your book that just fell behind. Loans count as yours when the core's Loan Officer column carries your name exactly."))),
+    h("div", { class: "grid2" },
+      block("Promises due", d.promises_due, (p) => [h("span", { class: "grow" }, h("b", null, p.member), ` · ${p.loan_no} · ${p.phone || "no phone"}`,
+        h("div", { class: "muted small" }, `${kes(p.amount_kes)} by ${p.due_on}; ${kes(p.paid_kes)} paid so far`)), h("span", { class: `pill out-${p.state === "open" ? "incomplete" : "fails"}` }, p.state === "open" ? "due" : "missed")], "No promise due."),
+      block("Decisions waiting for you", d.to_decide, (a) => [h("span", { class: "grow" }, app(a), ` · ${a.member} · ${kes(a.kes)}`,
+        h("div", { class: "muted small" }, `appraisal ${a.outcome || "?"} · waiting ${a.waiting_days} d`))], "Nothing to decide."),
+      block("Your applications", d.my_applications, (a) => [h("span", { class: "grow" }, app(a), ` · ${a.member} · ${kes(a.kes)}`), h("span", { class: `pill app-${a.status}` }, a.status)], "No open applications."),
+      block("Groups meeting today", d.groups_today, (g) => [h("span", { class: "grow" }, h("a", { href: `#/groups/${g.id}` }, g.name), ` · ${g.group_no} · ${g.members} members`)], "No group meets today."),
+      block("Just fell behind (1-7 days)", d.newly_behind, (l) => [h("span", { class: "grow" }, h("b", null, l.member), ` · ${l.loan_no} · ${l.phone || "no phone"}`), h("b", { class: "bad" }, `${kes(l.arrears_kes)} · ${l.days} d`)], "Nobody in your book just fell behind."),
+      d.refunds_owed.length ? block("Refunds owed to guarantors", d.refunds_owed, (r) => [h("span", { class: "grow" }, h("a", { href: `#/recovery/${r.id}` }, `Loan ${r.loan_no}`)), h("b", null, kes(r.kes))], "") : null),
+  ];
+}
+
+async function viewQuality() {
+  const q = await api(`${inst()}/data-quality`);
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Data quality"),
+      h("p", { class: "muted" }, `How complete the core system's exports are (${q.members} members, ${q.active_loans} active loans). Sawazi never treats a blank as zero, so each gap switches something off until the export carries it.`))),
+    h("section", { class: "panel" }, h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Field"), h("th", { class: "n" }, "Missing"), h("th", { class: "n" }, "Complete"), h("th", null, "Needed for"))),
+      h("tbody", null, q.fields.map((f) => h("tr", null, h("td", null, h("b", null, f.field), h("div", { class: "muted small" }, f.record)),
+        h("td", { class: "n" }, `${f.missing} of ${f.of}`),
+        h("td", { class: "n" }, f.complete_pct === null ? "—" : f.complete_pct < 90 ? h("span", { class: "bad" }, pct(f.complete_pct)) : pct(f.complete_pct)),
+        h("td", { class: "small" }, f.switches_on))))))),
   ];
 }

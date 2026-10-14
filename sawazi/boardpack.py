@@ -64,8 +64,18 @@ def _groups(s: Session, institution_id: int) -> dict:
 
 def take_snapshot(s: Session, institution_id: int, as_of: date | None = None) -> PortfolioSnapshot:
     """Record portfolio quality as it stands now. The same day twice replaces the earlier one. Caller commits."""
+    from .flow import record_history, roll_rates, turnaround
+
     as_of = as_of or utcnow().date()
-    figures = snapshot_figures(s, institution_id)  # before any new row exists: its queries may flush the session
+    record_history(s, institution_id, as_of)  # loan by loan, for roll rates
+    figures = snapshot_figures(s, institution_id)  # before the snapshot row exists: its queries may flush the session
+    rr = roll_rates(s, institution_id)
+    if rr:
+        r130 = next(r for r in rr["rows"] if r["from"] == "1-30")
+        figures["flow"] = {"start": str(rr["start"]), "end": str(rr["end"]), "behind_1_30": r130["loans"],
+                           "cured": r130["to"]["current"] + r130["to"]["closed"],
+                           "rolled_worse": sum(v for k, v in r130["to"].items() if k not in ("current", "1-30", "closed"))}
+    figures.setdefault("flow", {})["submit_to_money_days"] = turnaround(s, institution_id, utcnow())["median_days"]["submit_to_money"]
     snap = s.scalar(select(PortfolioSnapshot).where(PortfolioSnapshot.institution_id == institution_id,
                                                     PortfolioSnapshot.as_of == as_of))
     if snap is None:
@@ -73,9 +83,6 @@ def take_snapshot(s: Session, institution_id: int, as_of: date | None = None) ->
         s.add(snap)
     else:
         snap.taken_at, snap.figures = utcnow(), figures
-    from .flow import record_history
-
-    record_history(s, institution_id, as_of)  # loan by loan, for roll rates
     s.flush()
     return snap
 
@@ -222,6 +229,12 @@ def _summary(d: dict) -> list[str]:
         if grp and grp["groups_behind"]:
             out.append(f"{grp['groups_behind']} of {grp['groups']} borrowing group(s) have members behind: "
                        f"{kes(grp['arrears_cents'])} in arrears that their whole group stands behind.")
+        fl = cur.figures.get("flow") or {}
+        if fl.get("behind_1_30"):
+            out.append(f"Of {fl['behind_1_30']} loan(s) 1-30 days behind on {fl['start']}, {fl['cured']} were back on track "
+                       f"or repaid by {fl['end']} and {fl['rolled_worse']} fell further behind.")
+        if fl.get("submit_to_money_days") is not None:
+            out.append(f"Loans took a median of {fl['submit_to_money_days']:g} days from application to money.")
         w = cur.figures.get("watch")
         if w:
             if w["suspense_over_30"]["count"]:
