@@ -2092,6 +2092,7 @@ from .member_api import router as member_router  # noqa: E402
 from .network import router as network_router  # noqa: E402
 from .oversight import router as oversight_router  # noqa: E402
 from .watch import router as watch_router  # noqa: E402
+from .flow import router as flow_router  # noqa: E402
 from .recovery_api import router as recovery_router  # noqa: E402
 
 app.include_router(member_router)
@@ -2100,6 +2101,7 @@ app.include_router(recovery_router)
 app.include_router(network_router)
 app.include_router(oversight_router)
 app.include_router(watch_router)
+app.include_router(flow_router)
 app.mount("/console", StaticFiles(directory=CONSOLE_DIR, html=True), name="console")
 app.mount("/app", StaticFiles(directory=APP_DIR, html=True), name="member_app")
 app.mount("/site", StaticFiles(directory=SITE_DIR), name="site")

@@ -206,6 +206,9 @@ const VIEWS = {
   officers: { label: "Officers", group: "Oversight", icon: "users", need: "read", render: viewOfficers },
   insiders: { label: "Insiders", group: "Oversight", icon: "key", need: "read", render: viewInsiders },
   integrity: { label: "Integrity", group: "Oversight", icon: "shield", need: "read", render: viewIntegrity },
+  flow: { label: "Roll rates", group: "Oversight", icon: "chart", need: "read", render: viewRollRates },
+  turnaround: { label: "Turnaround", group: "Lending", icon: "cash", need: "read", render: viewTurnaround },
+  coaching: { label: "Reference help", group: "Today", icon: "phone", need: "read", render: viewCoaching },
   board: { label: "Board pack", group: "Oversight", icon: "chart", need: "read", render: viewBoard },
   returns: { label: "Returns", group: "Oversight", icon: "file", need: "returns", render: viewReturns },
   upload: { label: "Upload", group: "Setup", icon: "upload", need: "reconcile", render: viewUpload },
@@ -2085,5 +2088,64 @@ async function viewIntegrity() {
         h("tbody", null, r.approvers.map((a) => h("tr", null, h("td", null, a.approver), h("td", { class: "n" }, a.approved),
           h("td", { class: "n" }, a.overrides), h("td", { class: "n" }, a.override_pct >= 30 ? h("span", { class: "bad" }, pct(a.override_pct)) : pct(a.override_pct)))))))
         : h("div", { class: "empty" }, "No approvals in this period.")),
+  ];
+}
+
+// ------------------------------------------------------------------ roll rates, turnaround, reference help
+
+async function viewRollRates() {
+  const r = await api(`${inst()}/roll-rates`);
+  const head = h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Roll rates"),
+    h("p", { class: "muted" }, "How loans moved between two loans uploads, loan by loan: of the loans in each arrears band last time, how many are now current, the same, worse, or closed.")));
+  if (!r.rates) return [head, h("div", { class: "panel empty" }, "Roll rates need two loans uploads on different dates. Each upload (or snapshot) records every loan's arrears.")];
+  const x = r.rates, cols = ["current", "1-30", "31-60", "61-90", "over 90", "closed"];
+  return [head,
+    h("p", { class: "muted" }, `From ${x.start} to ${x.end} · ${x.new_loans} new loans since`),
+    h("section", { class: "panel" }, h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Was"), h("th", { class: "n" }, "Loans"), cols.map((c) => h("th", { class: "n" }, `Now ${c}`)),
+        h("th", { class: "n" }, "Rolled worse"), h("th", { class: "n" }, "Cured"))),
+      h("tbody", null, x.rows.map((row) => h("tr", null, h("td", null, h("b", null, row.from)), h("td", { class: "n" }, row.loans),
+        cols.map((c) => h("td", { class: "n" }, row.to[c] || "")),
+        h("td", { class: "n" }, row.rolled_worse_pct > 20 ? h("span", { class: "bad" }, pct(row.rolled_worse_pct)) : pct(row.rolled_worse_pct)),
+        h("td", { class: "n" }, row.from === "current" ? "" : pct(row.cured_pct)))))))),
+    h("p", { class: "muted small" }, "Cured means back to current or repaid. A rising roll from 1-30 into 31-60 is the earliest sign collections are slipping."),
+  ];
+}
+
+async function viewTurnaround() {
+  const r = await api(`${inst()}/turnaround`);
+  const label = { capture_to_submit: "Captured to submitted", submit_to_decision: "Submitted to decision", decision_to_handover: "Decision to hand-over",
+    handover_to_money: "Hand-over to money", submit_to_money: "Submitted to money, overall" };
+  const STATUS = { submitted: "Waiting for a decision", approved: "Waiting for the hand-over", exported: "Waiting for the core to pay out" };
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Loan turnaround"),
+      h("p", { class: "muted" }, `How long each step takes (median days, applications from the last ${r.days} days: ${r.applications}), and what is stuck.`))),
+    h("div", { class: "kpis" }, Object.entries(label).map(([k, l]) => h("div", { class: "kpi" }, h("span", { class: "eyebrow" }, l),
+      h("span", { class: "v" }, r.median_days[k] === null ? "—" : `${r.median_days[k]} d`)))),
+    h("div", { class: "grid2" },
+      h("section", { class: "panel" }, h("div", { class: "pad" }, h("h2", null, "Stuck applications")),
+        r.stuck.length ? h("div", { class: "list" }, r.stuck.map((x) => h("div", { class: "item" },
+          h("span", { class: "grow" }, h("a", { href: `#/loans/${x.id}` }, x.ref), ` · ${x.member} · ${kes(x.kes)}`, h("div", { class: "muted small" }, STATUS[x.status])),
+          h("b", { class: "bad" }, `${x.waiting_days} d`)))) : h("div", { class: "empty" }, "Nothing stuck.")),
+      h("section", { class: "panel" }, h("div", { class: "pad" }, h("h2", null, "Guarantors not answering (over 2 days)")),
+        r.guarantors_waiting.length ? h("div", { class: "list" }, r.guarantors_waiting.map((g) => h("div", { class: "item" },
+          h("span", { class: "grow" }, `${g.guarantor} (${g.member_no}) for `, h("a", { href: `#/loans/${g.id}` }, g.application)),
+          h("b", null, `${g.waiting_days} d`)))) : h("div", { class: "empty" }, "No guarantor is overdue."))),
+  ];
+}
+
+async function viewCoaching() {
+  const rows = await api(`${inst()}/reference-coaching`);
+  const copy = (text) => h("button", { type: "button", class: "link", onclick: (e) => {
+    navigator.clipboard.writeText(text).then(() => { e.target.textContent = "Copied"; });
+  } }, "Copy message");
+  return [
+    h("div", { class: "head" }, h("div", { class: "stack" }, h("h1", null, "Reference help"),
+      h("p", { class: "muted" }, "Members whose payments had to be cleared from suspense by hand at least twice in six months. Each has a short message telling them exactly what to type next time; send it from your phone or SMS tool."))),
+    h("section", { class: "panel" }, rows.length ? h("div", { class: "list" }, rows.map((r) => h("div", { class: "item" },
+      h("span", { class: "grow" }, h("b", null, r.name), " ", h("span", { class: "num muted" }, r.member_no),
+        h("div", { class: "muted small" }, `${r.times} payments cleared by hand · ${r.phone || "no phone"} · should use account ${r.account}`),
+        h("div", { class: "msg small" }, r.message)),
+      copy(r.message)))) : h("div", { class: "empty" }, "No member has needed this twice.")),
   ];
 }

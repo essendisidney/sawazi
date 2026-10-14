@@ -73,6 +73,9 @@ def take_snapshot(s: Session, institution_id: int, as_of: date | None = None) ->
         s.add(snap)
     else:
         snap.taken_at, snap.figures = utcnow(), figures
+    from .flow import record_history
+
+    record_history(s, institution_id, as_of)  # loan by loan, for roll rates
     s.flush()
     return snap
 
