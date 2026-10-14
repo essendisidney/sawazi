@@ -704,3 +704,19 @@ class PromiseToPay(Base):
     recorded_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("staff_users.id"))
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class LoanArrearsHistory(Base):
+    """Each loan's arrears as at a snapshot date, so arrears can be followed loan by loan (roll rates)."""
+
+    __tablename__ = "loan_arrears_history"
+    __table_args__ = (UniqueConstraint("loan_id", "as_of"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    loan_id: Mapped[int] = mapped_column(ForeignKey("loans.id"))
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(20))
+    days_in_arrears: Mapped[int] = mapped_column(Integer)
+    balance_cents: Mapped[int] = mapped_column(BigInteger)
+    arrears_cents: Mapped[int] = mapped_column(BigInteger)

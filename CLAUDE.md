@@ -56,6 +56,10 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
    off, days late after month end), suspense ageing (by payment date), integrity checks (duplicate ID numbers, phones
    on 3+ members, approval overrides per approver and quick overrides, suspense cleared to insiders, after-hours
    clearances). Findings are prompts for a person, never conclusions; board pack In brief lines
+10. Flow DONE (`sawazi/flow.py`): every snapshot records each loan's arrears (`LoanArrearsHistory`), so roll rates
+   compare two dates loan by loan (worse, cured, closed). Reference help lists members cleared from suspense by hand
+   2+ times in 6 months with a drafted message (copy only; Sawazi does not send it). Turnaround: median days per
+   loan step, applications stuck past `STUCK_DAYS`, guarantors not answering after 2 days
 
 ## Phase 4 — MFI group lending (started)
 - Joint liability (Sidney's answer): members borrow individually, the whole group stands behind every loan; groups meet
