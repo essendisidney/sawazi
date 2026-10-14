@@ -60,6 +60,10 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
    compare two dates loan by loan (worse, cured, closed). Reference help lists members cleared from suspense by hand
    2+ times in 6 months with a drafted message (copy only; Sawazi does not send it). Turnaround: median days per
    loan step, applications stuck past `STUCK_DAYS`, guarantors not answering after 2 days
+11. My day, data quality, member promises DONE (`sawazi/myday.py`; `/m/promises`): a staff member's promises due,
+   applications, decisions waiting, groups meeting today, loans just behind (Loan Officer column = their name).
+   Data quality counts blank fields in the core exports and what each switches off. Members promise a date from the
+   app (same `PromiseToPay`, no staff id). Board pack In brief adds the 1-30 roll and median days to money
 
 ## Phase 4 — MFI group lending (started)
 - Joint liability (Sidney's answer): members borrow individually, the whole group stands behind every loan; groups meet

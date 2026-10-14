@@ -36,6 +36,9 @@ const T = {
     depositsUsed: "Your deposits used for loans you guaranteed", used: "Used", refunded: "Refunded",
     stillRecovering: "the SACCO is still recovering the loan", askSacco: "ask your SACCO about the rest",
     refundRule: "When the SACCO recovers the loan, your deposits are refunded first.",
+    promiseAsk: "Can't pay today? Tell us when you will", promiseSend: "Send my promise", by: "by",
+    promiseHint: "Your SACCO will hold off reminders until that date.",
+    promiseState: { open: "Promised", kept: "Promise kept", part_paid: "Part paid", broken: "Promise missed" },
     advUpTo: "up to", perMonth: "a month", upTo: "You may qualify for up to", couldBeLower: "could be lower: some figures are missing",
     needCover: "Guarantors needed for", purpose: "What is it for?", gNos: "Guarantors' member numbers (optional)",
     gHint: "Separate with commas. The SACCO will ask them.", send: "Send application", yourApps: "Your applications",
@@ -70,6 +73,9 @@ const T = {
     depositsUsed: "Akiba zako zilizotumika kwa mikopo uliyodhamini", used: "Imetumika", refunded: "Imerudishwa",
     stillRecovering: "chama bado kinarejesha mkopo", askSacco: "uliza chama chako kuhusu kiasi kilichobaki",
     refundRule: "Chama kikirejesha mkopo, akiba zako zinarudishwa kwanza.",
+    promiseAsk: "Huwezi kulipa leo? Tuambie utalipa lini", promiseSend: "Tuma ahadi yangu", by: "kufikia",
+    promiseHint: "Chama chako kitasitisha vikumbusho hadi tarehe hiyo.",
+    promiseState: { open: "Umeahidi", kept: "Ahadi imetimizwa", part_paid: "Imelipwa sehemu", broken: "Ahadi haikutimizwa" },
     advUpTo: "hadi", perMonth: "kwa mwezi", upTo: "Unaweza kustahili hadi", couldBeLower: "huenda ikawa chini: baadhi ya taarifa hazipo",
     needCover: "Wadhamini wanahitajika kwa", purpose: "Ni wa kufanyia nini?", gNos: "Nambari za uanachama za wadhamini (si lazima)",
     gHint: "Tenganisha kwa koma. SACCO itawaomba.", send: "Tuma ombi", yourApps: "Maombi yako",
@@ -293,6 +299,9 @@ async function viewMoney() {
         h("div", null, h("div", { class: "label" }, t("instalment")), h("div", { class: "big" }, kes(l.installment_kes)),
           l.next_due_on ? h("div", { class: "muted small" }, `${t("nextDue")}: ${day(l.next_due_on)}`) : null)),
       late ? alertBox(l.days_in_arrears > 30 ? "bad" : "warn", `${t("overdue")}: ${kes(l.arrears_kes)}`) : null,
+      l.promise ? h("p", { class: "small" }, h("span", { class: `chip ${l.promise.state === "kept" ? "ok" : l.promise.state === "open" ? "warn" : "bad"}` },
+        T[state.lang].promiseState[l.promise.state] || l.promise.state), ` ${kes(l.promise.kes)} ${t("by")} ${day(l.promise.by)}`)
+        : late ? promiseForm(l) : null,
       payBox(l.pay));
   });
   const today = new Date(new Date().toDateString());
@@ -320,6 +329,22 @@ async function viewMoney() {
         h("b", { class: "num" }, kes(p.kes))))) : h("p", { class: "muted" }, t("noPays"))),
     statementCard(),
   ];
+}
+
+function promiseForm(l) {
+  const amount = h("input", { type: "number", inputmode: "decimal", min: "1", step: "1", required: true, value: String(Math.ceil(l.arrears_kes)) });
+  const by = h("input", { type: "date", required: true, min: new Date().toISOString().slice(0, 10) });
+  const slot = h("div"), btn = h("button", { type: "submit" }, t("promiseSend"));
+  return h("details", null, h("summary", { class: "small" }, t("promiseAsk")),
+    h("form", { class: "stack", onsubmit: (e) => {
+      e.preventDefault();
+      busy(btn, slot, async () => {
+        const r = await api("/m/promises", { method: "POST", body: { loan_no: l.loan_no, amount_kes: amount.value, due_on: by.value } });
+        slot.replaceChildren(alertBox("ok", r.message));
+        setTimeout(route, 1500);
+      });
+    } }, h("p", { class: "muted small" }, t("promiseHint")),
+      h("div", { class: "pair" }, h("label", null, t("amount"), amount), h("label", null, t("by"), by)), slot, btn));
 }
 
 function statementCard() {
