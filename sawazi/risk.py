@@ -24,9 +24,9 @@ def pledges(s: Session, institution_id: int) -> list[exposure.Pledge]:
 
 
 def report(s: Session, institution_id: int) -> exposure.Report:
-    members = [exposure.MemberRow(m.id, m.member_no, m.name, m.deposits_cents, m.employer)
+    members = [exposure.MemberRow(m.id, m.member_no, m.name, m.deposits_cents, m.employer, m.branch)
                for m in s.scalars(select(Member).where(Member.institution_id == institution_id))]
     loans = [exposure.LoanRow(ln.id, ln.loan_no, ln.member_id, ln.product, ln.balance_cents, ln.arrears_cents,
-                              ln.days_in_arrears)
+                              ln.days_in_arrears, ln.branch)
              for ln in s.scalars(select(Loan).where(Loan.institution_id == institution_id, Loan.status == "active"))]
     return exposure.report(members, loans, pledges(s, institution_id))

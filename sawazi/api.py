@@ -1890,7 +1890,7 @@ def risk_view(institution_id: int, s: Session = Depends(get_session)):
     r = risk.report(s, institution_id)
     return _kes_fields({"portfolio": r.portfolio, "classification": r.classification,
                         "par_by_product": r.par_by_product, "par_by_employer": r.par_by_employer,
-                        "concentration": r.concentration, "guarantors": r.guarantors,
+                        "par_by_branch": r.par_by_branch, "concentration": r.concentration, "guarantors": r.guarantors,
                         "flags": [{"kind": f.kind, "severity": f.severity, "member_nos": f.member_nos,
                                    "amount_cents": f.amount_cents, "message": f.message} for f in r.flags],
                         "groups": _group_overview_out(s, institution_id)})
@@ -2094,6 +2094,7 @@ from .oversight import router as oversight_router  # noqa: E402
 from .watch import router as watch_router  # noqa: E402
 from .flow import router as flow_router  # noqa: E402
 from .myday import router as myday_router  # noqa: E402
+from .cron import router as cron_router  # noqa: E402
 from .recovery_api import router as recovery_router  # noqa: E402
 
 app.include_router(member_router)
@@ -2104,6 +2105,7 @@ app.include_router(oversight_router)
 app.include_router(watch_router)
 app.include_router(flow_router)
 app.include_router(myday_router)
+app.include_router(cron_router)
 app.mount("/console", StaticFiles(directory=CONSOLE_DIR, html=True), name="console")
 app.mount("/app", StaticFiles(directory=APP_DIR, html=True), name="member_app")
 app.mount("/site", StaticFiles(directory=SITE_DIR), name="site")

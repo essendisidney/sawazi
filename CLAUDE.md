@@ -64,6 +64,10 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
    applications, decisions waiting, groups meeting today, loans just behind (Loan Officer column = their name).
    Data quality counts blank fields in the core exports and what each switches off. Members promise a date from the
    app (same `PromiseToPay`, no staff id). Board pack In brief adds the 1-30 roll and median days to money
+12. Branches, benchmarks, nightly job DONE: "Branch" column on members/loans exports (loan's wins) gives PAR by branch
+   (Risk, board pack weakest branch). Sector benchmarks (`network.benchmarks`): network SACCOs' latest snapshot PAR
+   quartiles, shown only with 5+ SACCOs (`BENCH_MIN`). `sawazi/cron.py` GET /cron/daily (Bearer CRON_SECRET or
+   SAWAZI_CRON_SECRET; refuses without one) rebuilds every collections queue; vercel.json schedules 03:00 UTC
 
 ## Phase 4 — MFI group lending (started)
 - Joint liability (Sidney's answer): members borrow individually, the whole group stands behind every loan; groups meet

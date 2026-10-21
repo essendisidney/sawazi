@@ -136,6 +136,9 @@ def _apply_member_figures(m: Member, row: dict, i: int, res: ImportResult) -> bo
         touched = True
         set_balance |= field in ("deposits_cents", "shares_cents")
         set_pay |= field in ("gross_pay_cents", "net_pay_cents")
+    raw = pick(row, "branch", "branch_name", "station").strip()
+    if raw:
+        m.branch, touched = raw[:80], True
     raw = pick(row, "insider", "insider_type", "insider_category").strip().lower()
     if raw:
         kind = _insider_kind(raw)
@@ -339,6 +342,7 @@ def import_loans(s: Session, institution_id: int, content) -> ImportResult:
         ln.next_due_on = to_date(pick(row, "next_due_on", "next_due_date", "due_date"))
         ln.officer = (pick(row, "loan_officer", "officer", "credit_officer", "relationship_officer").strip()[:120]
                       or ln.officer)
+        ln.branch = pick(row, "branch", "branch_name", "station").strip()[:80] or ln.branch
         via = pick(row, "repays_via", "repayment_mode", "mode").lower()
         ln.repays_via = "checkoff" if "check" in via else ("bank" if "bank" in via else "mpesa")
         core_status = pick(row, "status", "loan_status").lower()

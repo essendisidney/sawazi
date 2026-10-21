@@ -117,10 +117,11 @@ def arrears_parts(l):
 
 
 w("loans.csv", ["Loan No", "Member No", "Product", "Principal", "Balance", "Installment", "Arrears",
-                "Penalty Arrears", "Interest Arrears", "Days In Arrears", "Disbursement Date", "Repayment Mode", "Loan Officer"],
+                "Penalty Arrears", "Interest Arrears", "Days In Arrears", "Disbursement Date", "Repayment Mode", "Loan Officer", "Branch"],
   [[l["loan_no"], l["member_no"], l["product"], f"{l['principal']:,.2f}", f"{l['balance']:,.2f}",
     f"{l['inst']:,.2f}", f"{l['arrears']:,.2f}", *(f"{x:,.2f}" for x in arrears_parts(l)),
-    l["dpd"], l["disbursed"], l["via"], ("Chebet Credit Officer", "Kamau Mwangi", "Akinyi Odhiambo")[k % 3]]
+    l["dpd"], l["disbursed"], l["via"], ("Chebet Credit Officer", "Kamau Mwangi", "Akinyi Odhiambo")[k % 3],
+    ("Nairobi CBD", "Mombasa Moi Avenue", "Kisumu")[(k // 2) % 3]]
    for k, l in enumerate(loans)])  # fictional officers
 
 # ---- M-Pesa paybill statement (Safaricom org portal layout)

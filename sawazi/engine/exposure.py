@@ -38,6 +38,7 @@ class MemberRow:
     name: str
     deposits_cents: int | None
     employer: str | None
+    branch: str | None = None
 
 
 @dataclass
@@ -49,6 +50,7 @@ class LoanRow:
     balance_cents: int
     arrears_cents: int
     days_in_arrears: int
+    branch: str | None = None
 
 
 @dataclass
@@ -78,6 +80,7 @@ class Report:
     concentration: dict
     guarantors: dict
     flags: list[Flag] = field(default_factory=list)
+    par_by_branch: list[dict] = field(default_factory=list)  # empty unless the exports carry a branch
 
 
 def kes(cents: int) -> str:
@@ -123,11 +126,12 @@ def report(members: list[MemberRow], loans: list[LoanRow], pledges: list[Pledge]
                                "provision_cents": -(-bal * rate // 10000)})
     portfolio["provision_cents"] = sum(c["provision_cents"] for c in classification)
 
-    by_product, by_employer = defaultdict(list), defaultdict(list)
+    by_product, by_employer, by_branch = defaultdict(list), defaultdict(list), defaultdict(list)
     for ln in loans:
         by_product[ln.product or "Unnamed product"].append(ln)
         m = by_id.get(ln.member_id)
         by_employer[(m.employer if m and m.employer else "Not on check-off")].append(ln)
+        by_branch[ln.branch or (m.branch if m else None) or "No branch given"].append(ln)
 
     # ---- concentration
     per_borrower = defaultdict(int)
@@ -215,5 +219,6 @@ def report(members: list[MemberRow], loans: list[LoanRow], pledges: list[Pledge]
                           for g, v in sorted(pledged.items(), key=lambda kv: -kv[1])[:10]]}
     sev = {"high": 0, "medium": 1}
     flags.sort(key=lambda f: (sev[f.severity], -f.amount_cents))
+    branches = _par_rows(by_branch, limits) if set(by_branch) - {"No branch given"} else []
     return Report(portfolio, classification, _par_rows(by_product, limits), _par_rows(by_employer, limits),
-                  concentration, guarantors, flags)
+                  concentration, guarantors, flags, branches)

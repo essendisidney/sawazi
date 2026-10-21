@@ -42,6 +42,7 @@ def snapshot_figures(s: Session, institution_id: int) -> dict:
         ExceptionItem.kind == "suspense")).one()
     return {"portfolio": r.portfolio, "classification": r.classification,
             "par_by_product": r.par_by_product[:10], "par_by_employer": r.par_by_employer[:10],
+            "par_by_branch": r.par_by_branch[:20],
             "guarantors": {k: r.guarantors[k] for k in ("members_guaranteeing", "pledged_cents", "on_loans_behind_cents")},
             "flags": dict(Counter(f.kind for f in r.flags)), "flags_high": sum(f.severity == "high" for f in r.flags),
             "suspense": {"count": susp[0], "cents": int(susp[1])}, **_groups(s, institution_id)}
@@ -75,6 +76,13 @@ def take_snapshot(s: Session, institution_id: int, as_of: date | None = None) ->
         figures["flow"] = {"start": str(rr["start"]), "end": str(rr["end"]), "behind_1_30": r130["loans"],
                            "cured": r130["to"]["current"] + r130["to"]["closed"],
                            "rolled_worse": sum(v for k, v in r130["to"].items() if k not in ("current", "1-30", "closed"))}
+    from .network import benchmarks
+
+    inst = s.get(Institution, institution_id)
+    b = benchmarks(s, inst) if inst else {"ready": False}
+    if b["ready"]:
+        par30 = next(m for m in b["measures"] if m["key"] == "par30_bps")
+        figures["benchmark"] = {"saccos": b["saccos"], "median_bps": par30["median_bps"], "own_bps": par30["own_bps"]}
     figures.setdefault("flow", {})["submit_to_money_days"] = turnaround(s, institution_id, utcnow())["median_days"]["submit_to_money"]
     snap = s.scalar(select(PortfolioSnapshot).where(PortfolioSnapshot.institution_id == institution_id,
                                                     PortfolioSnapshot.as_of == as_of))
@@ -229,6 +237,14 @@ def _summary(d: dict) -> list[str]:
         if grp and grp["groups_behind"]:
             out.append(f"{grp['groups_behind']} of {grp['groups']} borrowing group(s) have members behind: "
                        f"{kes(grp['arrears_cents'])} in arrears that their whole group stands behind.")
+        branches = cur.figures.get("par_by_branch") or []
+        if len(branches) > 1:
+            worst = max(branches, key=lambda b: b["par_bps"])
+            out.append(f"Weakest branch: {worst['name']}, PAR {pct(worst['par_bps'])} on {kes(worst['balance_cents'])}.")
+        bench = cur.figures.get("benchmark")
+        if bench:
+            out.append(f"Across {bench['saccos']} SACCOs in the network, PAR 30 has a median of {pct(bench['median_bps'])}; "
+                       f"this SACCO's is {pct(bench['own_bps'])}.")
         fl = cur.figures.get("flow") or {}
         if fl.get("behind_1_30"):
             out.append(f"Of {fl['behind_1_30']} loan(s) 1-30 days behind on {fl['start']}, {fl['cured']} were back on track "
