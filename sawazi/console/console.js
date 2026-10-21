@@ -1204,7 +1204,7 @@ const CLASS_LABEL = { performing: "Performing", watch: "Watch", substandard: "Su
 const pct = (v) => `${(v || 0).toFixed(1)}%`;
 
 async function viewRisk() {
-  const [r, net] = await Promise.all([api(`${inst()}/risk`), api(`${inst()}/network/guarantees`)]);
+  const [r, net, bench] = await Promise.all([api(`${inst()}/risk`), api(`${inst()}/network/guarantees`), api(`${inst()}/network/benchmarks`)]);
   const p = r.portfolio, g = r.guarantors;
   const kpi = (label, value, sub, bad) => h("div", { class: "kpi" },
     h("span", { class: "eyebrow" }, label), h("span", { class: bad ? "v bad" : "v" }, value), h("span", { class: "s" }, sub));
@@ -1268,6 +1268,7 @@ async function viewRisk() {
     kpis, flagList,
     h("div", { class: "grid2" }, classTable, topGuarantors),
     h("div", { class: "grid2" }, parTable("PAR by product", r.par_by_product), parTable("PAR by employer", r.par_by_employer)),
+    r.par_by_branch.length ? h("div", { class: "grid2" }, parTable("PAR by branch", r.par_by_branch), benchPanel(bench)) : benchPanel(bench),
     topBorrowers,
     r.groups ? table(`Groups: ${r.groups.groups_behind} of ${r.groups.groups} have members behind (PAR 30 ${pct(r.groups.par30_pct)})`,
       [["Group"], ["Members", 1], ["Behind", 1], ["Arrears the group stands behind", 1], ["PAR 30", 1]],
@@ -2187,4 +2188,18 @@ async function viewQuality() {
         h("td", { class: "n" }, f.complete_pct === null ? "—" : f.complete_pct < 90 ? h("span", { class: "bad" }, pct(f.complete_pct)) : pct(f.complete_pct)),
         h("td", { class: "small" }, f.switches_on))))))),
   ];
+}
+
+// ------------------------------------------------------------------ sector benchmarks
+
+function benchPanel(b) {
+  const intro = "How this SACCO compares with the other SACCOs in the network, from each one's latest loans upload. Only medians and quartiles are shown, and only once at least 5 SACCOs take part, so no SACCO can be picked out.";
+  if (!b.opted_in || !b.ready) return h("section", { class: "panel pad stack" }, h("h2", null, "Sector benchmarks"), h("p", { class: "muted small" }, intro),
+    h("p", null, !b.opted_in ? "Join the guarantee network (below) to compare." : `${b.saccos} of the 5 SACCOs needed have joined so far.`));
+  return h("section", { class: "panel" }, h("div", { class: "pad stack" }, h("h2", null, `Sector benchmarks (${b.saccos} SACCOs)`), h("p", { class: "muted small" }, intro)),
+    h("div", { class: "tbl-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Measure"), h("th", { class: "n" }, "This SACCO"), h("th", { class: "n" }, "Best quarter"), h("th", { class: "n" }, "Median"), h("th", { class: "n" }, "Worst quarter"))),
+      h("tbody", null, b.measures.map((m) => h("tr", null, h("td", null, m.label),
+        h("td", { class: "n" }, h("b", { class: m.own_pct > m.p75_pct ? "bad" : "" }, pct(m.own_pct))),
+        h("td", { class: "n" }, pct(m.p25_pct)), h("td", { class: "n" }, pct(m.median_pct)), h("td", { class: "n" }, pct(m.p75_pct))))))));
 }

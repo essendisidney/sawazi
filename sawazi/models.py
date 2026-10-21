@@ -62,6 +62,7 @@ class Member(Base):
     pay_as_of: Mapped[date | None] = mapped_column(Date)
     last_dividend_cents: Mapped[int | None] = mapped_column(BigInteger)  # dividend (and interest rebate) last paid
     insider: Mapped[str | None] = mapped_column(String(20))  # board | supervisory | staff | related (oversight.INSIDERS)
+    branch: Mapped[str | None] = mapped_column(String(80))  # as the core system names it
 
     loans: Mapped[list[Loan]] = relationship(back_populates="member")
 
@@ -88,6 +89,7 @@ class Loan(Base):
     next_due_on: Mapped[date | None] = mapped_column(Date)
     repays_via: Mapped[str] = mapped_column(String(20), default="mpesa")  # mpesa | checkoff | bank
     officer: Mapped[str | None] = mapped_column(String(120))  # loan officer, as the core system names them
+    branch: Mapped[str | None] = mapped_column(String(80))  # the loan's branch; else the member's
     status: Mapped[str] = mapped_column(String(20), default="active")  # active | closed | written_off
 
     member: Mapped[Member] = relationship(back_populates="loans")

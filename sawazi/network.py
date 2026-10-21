@@ -90,6 +90,49 @@ def network_guarantees(institution_id: int, s: Session = Depends(get_session)):
     return {"opted_in": True, "saccos": len(_peers(s, inst)) + 1, "members": rows[:50]}
 
 
+BENCH_MIN = 5  # fewer SACCOs and a median could point at one of them
+MEASURES = (("par1_bps", "PAR 1 (any arrears)"), ("par30_bps", "PAR 30"), ("par90_bps", "PAR 90"))
+
+
+def _quartiles(values: list[int]) -> tuple[int, int, int]:
+    v = sorted(values)
+    q = lambda f: v[min(int(round(f * (len(v) - 1))), len(v) - 1)]  # noqa: E731  (nearest rank)
+    return q(0.25), q(0.5), q(0.75)
+
+
+def benchmarks(s: Session, inst: Institution) -> dict:
+    """This SACCO's portfolio quality against the network's quartiles, from each SACCO's latest snapshot."""
+    from .models import PortfolioSnapshot
+
+    if not inst.network_opt_in:
+        return {"opted_in": False, "ready": False, "saccos": 0, "measures": []}
+    ids = _peers(s, inst) + [inst.id]
+    latest = {}
+    for snap in s.scalars(select(PortfolioSnapshot).where(PortfolioSnapshot.institution_id.in_(ids))
+                          .order_by(PortfolioSnapshot.as_of)):
+        if snap.figures and snap.figures.get("portfolio", {}).get("loans"):
+            latest[snap.institution_id] = snap.figures["portfolio"]
+    if inst.id not in latest or len(latest) < BENCH_MIN:
+        return {"opted_in": True, "ready": False, "saccos": len(latest), "measures": []}
+    out = []
+    for key, label in MEASURES:
+        p25, med, p75 = _quartiles([p.get(key, 0) for p in latest.values()])
+        out.append({"key": key, "label": label, "own_bps": latest[inst.id].get(key, 0),
+                    "p25_bps": p25, "median_bps": med, "p75_bps": p75})
+    return {"opted_in": True, "ready": True, "saccos": len(latest), "measures": out}
+
+
+@router.get("/institutions/{institution_id}/network/benchmarks", dependencies=[Depends(require("read"))])
+def network_benchmarks(institution_id: int, s: Session = Depends(get_session)):
+    inst = s.get(Institution, institution_id)
+    if inst is None:
+        raise HTTPException(404, "institution not found")
+    b = benchmarks(s, inst)
+    pctd = lambda m: {**{k: v for k, v in m.items() if not k.endswith("_bps")},  # noqa: E731
+                      **{k[:-4] + "_pct": v / 100 for k, v in m.items() if k.endswith("_bps")}}
+    return {**b, "measures": [pctd(m) for m in b["measures"]]}
+
+
 class NetworkIn(BaseModel):
     opt_in: bool
     confirm: str | None = Field(default=None, max_length=200,
