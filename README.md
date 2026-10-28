@@ -302,8 +302,10 @@ If Taifa Mobile does not answer in time the message is marked `unknown` and is n
 
 Providers, set with `SAWAZI_SMS_PROVIDER`:
 - `simulate` (default): sends nothing and marks messages `simulated`. Taifa Mobile has no sandbox, so use this to try the flow.
-- `taifa`: real sends. Needs `SAWAZI_TAIFA_API_KEY`, and the institution's admin must switch SMS on with
+- `taifa`: real sends through Taifa Mobile API v2 (`POST https://api.taifamobile.co.ke/v2/sms/sendsms`, `h_api_key`
+  header). Needs `TAIFA_API_KEY` (or `SAWAZI_TAIFA_API_KEY`), and the institution's admin must switch SMS on with
   `PUT /institutions/{id}/sms/settings` (`enabled`, Taifa `service_name`, optional `opt_out_text` added to every message).
+  With no service name the sender is `TAIFA_SENDER_ID`, default `SIDNET` (the only sender approved on the account).
 
 Delivery reports and opt-outs come back from Taifa Mobile on callback URLs that carry a secret
 (`SAWAZI_SMS_CALLBACK_TOKEN`; the callbacks are closed if it is not set). Register these with Taifa Mobile:

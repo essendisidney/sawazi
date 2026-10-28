@@ -13,7 +13,6 @@ dependencies = [
     "pydantic==2.12.5",
     "rapidfuzz==3.14.6",
     "python-multipart==0.0.32",
-    "cryptography==50.0.2",
     "httpx==0.28.1",
 ]
 

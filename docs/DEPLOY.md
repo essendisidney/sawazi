@@ -45,7 +45,7 @@ When that is done, take the platform key off the server: delete the value of `SA
 ## Connect M-Pesa, SMS and USSD
 
 Each comes with its own pilot checklist item; do them in a test window first.
-- **SMS (Taifa Mobile):** set `SAWAZI_TAIFA_API_KEY`, then `SAWAZI_SMS_PROVIDER=taifa`. Register these with Taifa:
+- **SMS (Taifa Mobile):** set `TAIFA_API_KEY` (and `TAIFA_SENDER_ID=SIDNET`), then `SAWAZI_SMS_PROVIDER=taifa`. Register these with Taifa:
   `https://<domain>/callbacks/taifa/<SAWAZI_SMS_CALLBACK_TOKEN>/delivery`, `.../subscription` and `.../incoming`.
 - **M-Pesa C2B (Daraja):** set `SAWAZI_DARAJA_CALLBACK_TOKEN`, then register
   `https://<domain>/callbacks/c2b/<token>/confirmation` and `/validation` for the paybill, from a checkout of

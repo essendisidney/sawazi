@@ -2,8 +2,6 @@ import json
 
 import httpx
 import pytest
-from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from sqlalchemy import select
 
 from sawazi import sms
@@ -16,32 +14,15 @@ TOKEN = "cb-secret-token"
 
 # ---------------------------------------------------------------- Taifa protocol
 
-PLAINTEXT = '{"message":"Hello \\/ test","recepients":"254712345678"}'
-
-
-def test_encryption_matches_openssl_reference_vectors():
-    # Generated independently with the openssl CLI (aes-128-cbc, Taifa's IV), mirroring PHP openssl_encrypt.
-    long_key = "test-api-key-0123456789"  # PHP uses the first 16 bytes
-    assert sms.taifa_encrypt(PLAINTEXT, long_key) == (
-        "123bf7b5786cc01a78c1fc19828aa9a19c3fae16d2b3c9e1c844289d20a38bf7"
-        "396555d36ccac2c8b1b3da791f54d7ecd987451ae09cace42b4779930ee588a2")
-    short_key = "short"  # PHP zero-pads to 16 bytes
-    assert sms.taifa_encrypt(PLAINTEXT, short_key) == (
-        "1b0ac0c81999eef95a37b946a1988b165c7d014fbab813f431f59f81de13cc9e"
-        "85792d4effb0ceb7974cd0a719c565657041eec1b9ed5eb2e6aa839572cb0718")
-
-
-def test_payload_json_matches_php_json_encode():
-    assert sms.php_json({"message": "Hello / test", "recepients": "254712345678"}) == PLAINTEXT
-    assert sms.php_json({"message": "Asante sana – karibu"}) == '{"message":"Asante sana \\u2013 karibu"}'
-
-
-def decrypt(hex_payload: str, api_key: str) -> dict:
-    key = api_key.encode()[:16].ljust(16, b"\0")
-    dec = Cipher(algorithms.AES(key), modes.CBC(sms.TAIFA_IV)).decryptor()
-    raw = dec.update(bytes.fromhex(hex_payload)) + dec.finalize()
-    unpadder = padding.PKCS7(128).unpadder()
-    return json.loads(unpadder.update(raw) + unpadder.finalize())
+@pytest.mark.parametrize("text,error", [
+    ('[{"status_code":"1000","status_desc":"Success","message_id":42,"credit_balance":"6.33"}]', None),
+    ('{"status_code":1000,"status_desc":"Success"}', None),  # bare object, numeric code
+    ('[{"status_code":"1004","status_desc":"Low credits"}]', "Taifa 1004: Low credits"),
+    ('{"status_code":"1001"}', 'Taifa 1001: {"status_code":"1001"}'),
+    ("<html>404 Not Found</html>", "Bad response from Taifa: <html>404 Not Found</html>"),
+])
+def test_taifa_rejection(text, error):
+    assert sms.taifa_rejection(text) == error
 
 
 def taifa(handler):
@@ -52,24 +33,34 @@ def test_taifa_request_shape_and_success():
     seen = {}
 
     def handler(request):
-        seen["url"] = str(request.url)
+        seen["url"], seen["headers"] = str(request.url), request.headers
         seen["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"messageId": "b77d7e8e961bc52521ca25baddab068a", "status": "00",
-                                         "statusDescription": "Success"})
+        return httpx.Response(200, json=[{"status_code": "1000", "status_desc": "Success", "message_id": 9876,
+                                          "credit_balance": "6.33"}])
 
     res = taifa(handler).send("254712345678", "Dear Achieng, pay via Paybill 522900.", "UFANISI")
-    assert seen["url"] == "https://sms.taifamobile.co.ke/clientapi/sms/"
-    assert seen["body"]["key"] == "the-api-key-1234567" and seen["body"]["service_name"] == "UFANISI"
-    assert decrypt(seen["body"]["message"], "the-api-key-1234567") == {
-        "message": "Dear Achieng, pay via Paybill 522900.", "recepients": "254712345678"}
-    assert (res.status, res.provider_message_id, res.provider_status) == ("sent", "b77d7e8e961bc52521ca25baddab068a", "00")
+    assert seen["url"] == "https://api.taifamobile.co.ke/v2/sms/sendsms"
+    assert seen["headers"]["h_api_key"] == "the-api-key-1234567" and "api-key" not in seen["headers"]
+    assert seen["headers"]["content-type"] == "application/json"
+    assert seen["body"] == {"mobile": "254712345678", "sender_name": "UFANISI",
+                            "message": "Dear Achieng, pay via Paybill 522900.", "response_type": "json"}
+    assert (res.status, res.provider_message_id, res.provider_status) == ("sent", "9876", "1000")
 
 
-@pytest.mark.parametrize("code,status,words", [("97", "failed", "no enough funds"), ("98", "failed", "service name"),
-                                               ("01", "failed", "Failed")])
-def test_taifa_error_codes(code, status, words):
-    res = taifa(lambda r: httpx.Response(200, json={"status": code, "statusDescription": "x"})).send("254712345678", "m", None)
-    assert res.status == status and words in res.description and res.provider_status == code
+def test_taifa_sender_falls_back_to_sidnet():
+    seen = []
+    ok = lambda r: seen.append(json.loads(r.content)) or httpx.Response(200, json=[{"status_code": "1000"}])  # noqa: E731
+    taifa(ok).send("254712345678", "m", None)
+    sms.TaifaProvider("k", transport=httpx.MockTransport(ok), sender="OTHER").send("254712345678", "m", "  ")
+    assert [b["sender_name"] for b in seen] == ["SIDNET", "OTHER"]
+
+
+@pytest.mark.parametrize("code,desc", [("1004", "Low credits"), ("1001", "Invalid short code"),
+                                       ("1006", "Invalid API key")])
+def test_taifa_error_codes(code, desc):
+    res = taifa(lambda r: httpx.Response(200, json=[{"status_code": code, "status_desc": desc}])).send(
+        "254712345678", "m", None)
+    assert res.status == "failed" and res.description == f"Taifa {code}: {desc}" and res.provider_status == code
 
 
 def test_taifa_timeout_is_unknown_not_failed():
@@ -83,7 +74,8 @@ def test_taifa_unreachable_and_garbage():
     def refused(request):
         raise httpx.ConnectError("no route", request=request)
     assert taifa(refused).send("254712345678", "m", None).status == "failed"
-    assert taifa(lambda r: httpx.Response(502, text="<html>bad gateway")).send("254712345678", "m", None).status == "unknown"
+    garbage = taifa(lambda r: httpx.Response(404, text="<html>Not Found")).send("254712345678", "m", None)
+    assert garbage.status == "failed" and garbage.description == "Bad response from Taifa: <html>Not Found"
 
 
 def test_stop_words():
@@ -98,10 +90,15 @@ def test_provider_from_env(monkeypatch):
     assert sms.provider_from_env().name == "simulate"
     monkeypatch.setenv("SAWAZI_SMS_PROVIDER", "taifa")
     monkeypatch.delenv("SAWAZI_TAIFA_API_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="SAWAZI_TAIFA_API_KEY"):
+    monkeypatch.delenv("TAIFA_API_KEY", raising=False)
+    monkeypatch.delenv("TAIFA_SENDER_ID", raising=False)
+    with pytest.raises(RuntimeError, match="TAIFA_API_KEY"):
         sms.provider_from_env()
     monkeypatch.setenv("SAWAZI_TAIFA_API_KEY", "k")
     assert sms.provider_from_env().name == "taifa"
+    monkeypatch.setenv("TAIFA_API_KEY", ' "your-taifa-api-key" ')
+    p = sms.provider_from_env()
+    assert (p.api_key, p.sender, p.url) == ("your-taifa-api-key", "SIDNET", sms.TAIFA_URL)
 
 
 # ---------------------------------------------------------------- approving and sending
@@ -216,7 +213,7 @@ def test_who_may_send(world):
 
 def test_real_provider_needs_institution_switched_on(world):
     c, _, _ = world
-    real = FakeProvider(name="taifa", result=sms.SendResult("sent", "tm-1", "00", "Success"))
+    real = FakeProvider(name="taifa", result=sms.SendResult("sent", "tm-1", "1000", "Success"))
     app.dependency_overrides[sms.get_provider] = lambda: real
     admin = login(c, "admin@a.test")
     r = c.post("/institutions/1/reminders/send", headers=admin, json={"reminder_ids": [11]})
@@ -229,13 +226,13 @@ def test_real_provider_needs_institution_switched_on(world):
 
 def test_failed_send_can_be_retried(world):
     c, Session, _ = world
-    broke = FakeProvider(result=sms.SendResult("failed", None, "97", "Taifa Mobile account has no enough funds"))
+    broke = FakeProvider(result=sms.SendResult("failed", None, "1004", "Taifa 1004: Low credits"))
     app.dependency_overrides[sms.get_provider] = lambda: broke
     h = login(c, "accountant@a.test")
     res = send(c, h, 11)[11]
     assert res.pop("sms_id")
     assert res == {"reminder_id": 11, "result": "failed", "phone": "254711000011",
-                   "detail": "Taifa Mobile account has no enough funds"}
+                   "detail": "Taifa 1004: Low credits"}
     with Session() as s:
         assert s.get(Reminder, 11).status == "failed"
     ok = FakeProvider()
@@ -294,7 +291,7 @@ def cb(c, kind, body, token=TOKEN):
 
 
 def sent_via_taifa(c, Session, reminder_id=11):
-    real = FakeProvider(name="taifa", result=sms.SendResult("sent", "tm-abc", "00", "Success"))
+    real = FakeProvider(name="taifa", result=sms.SendResult("sent", "tm-abc", "1000", "Success"))
     app.dependency_overrides[sms.get_provider] = lambda: real
     admin = login(c, "admin@a.test")
     c.put("/institutions/1/sms/settings", headers=admin, json={"enabled": True, "service_name": "UFANISI"})
