@@ -5,14 +5,14 @@ Nothing is ever sent without a staff member approving it (see the /send endpoint
 Providers
 - simulate (default): sends nothing, marks messages `simulated`. Taifa Mobile has no
   sandbox, so this is how to try the whole flow safely.
-- taifa: real sends. Needs SAWAZI_SMS_PROVIDER=taifa, SAWAZI_TAIFA_API_KEY, and the
-  institution's SMS settings switched on.
+- taifa: real sends. Needs SAWAZI_SMS_PROVIDER=taifa, TAIFA_API_KEY (or SAWAZI_TAIFA_API_KEY),
+  and the institution's SMS settings switched on.
 
-Taifa Mobile's protocol (from their reference library, github.com/taifaMobile/sms):
-POST {base}/sms/ with JSON {"message": <hex>, "key": <api key>, "service_name": ...}
-where <hex> is AES-128-CBC (PKCS7) of {"message": ..., "recepients": ...} [sic],
-keyed with the API key (PHP openssl semantics: first 16 bytes, zero-padded if
-shorter) and a fixed IV. Reply: {"messageId", "status", "statusDescription"}.
+Taifa Mobile API v2: POST https://api.taifamobile.co.ke/v2/sms/sendsms with an `h_api_key`
+header and JSON {"mobile", "sender_name", "message", "response_type": "json"}. Always HTTP 200;
+the reply is [{"status_code", "status_desc", "message_id", ...}] (or a bare object), and
+status_code "1000" means accepted. (The old encrypted sms.taifamobile.co.ke/clientapi is gone.)
+The sender is the institution's service name, else TAIFA_SENDER_ID, else SIDNET.
 """
 from __future__ import annotations
 
@@ -22,19 +22,10 @@ import uuid
 from dataclasses import dataclass
 
 import httpx
-from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-TAIFA_URL = "https://sms.taifamobile.co.ke/clientapi"
-TAIFA_IV = b"w4^dgd$%^62:)dgs"  # fixed by Taifa's protocol, not ours to choose
-
-TAIFA_STATUS = {
-    "00": "Success",
-    "01": "Failed",
-    "97": "Taifa Mobile account has no enough funds",
-    "98": "Service not found (check the institution's SMS service name)",
-    "99": "Missing required details",
-}
+TAIFA_URL = "https://api.taifamobile.co.ke/v2/sms/sendsms"
+TAIFA_OK = "1000"
+DEFAULT_SENDER = "SIDNET"  # the only sender approved on the Taifa account
 
 # Delivery report statuses. Anything not "delivered" is kept verbatim for staff to read.
 DELIVERED = {"DeliveredToTerminal"}
@@ -64,46 +55,57 @@ class SimulatedProvider:
         return SendResult("simulated", f"sim-{uuid.uuid4().hex}", None, "Simulated: nothing was sent")
 
 
-def php_json(obj) -> str:
-    """json_encode() defaults, so the encrypted payload is byte-for-byte what Taifa's PHP client sends."""
-    return json.dumps(obj, separators=(",", ":"), ensure_ascii=True).replace("/", "\\/")
+def _unquote(value: str | None) -> str:
+    return (value or "").strip().strip("\"'").strip()
 
 
-def taifa_encrypt(plaintext: str, api_key: str) -> str:
-    key = api_key.encode()[:16].ljust(16, b"\0")
-    padder = padding.PKCS7(128).padder()
-    data = padder.update(plaintext.encode()) + padder.finalize()
-    enc = Cipher(algorithms.AES(key), modes.CBC(TAIFA_IV)).encryptor()
-    return (enc.update(data) + enc.finalize()).hex()
+def taifa_reply(text: str) -> tuple[dict, str | None]:
+    """(first row of the reply, None if accepted else why not)."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {}, f"Bad response from Taifa: {text[:120]}"
+    row = (data[0] if data else {}) if isinstance(data, list) else data
+    if not isinstance(row, dict):
+        row = {}
+    code = "" if row.get("status_code") is None else str(row["status_code"])
+    if code == TAIFA_OK:
+        return row, None
+    return row, f"Taifa {code or '?'}: {row.get('status_desc') or text[:120]}"
+
+
+def taifa_rejection(text: str) -> str | None:
+    """None when Taifa accepted the message (status_code "1000"), else the reason."""
+    return taifa_reply(text)[1]
 
 
 class TaifaProvider:
     name = "taifa"
 
-    def __init__(self, api_key: str, base_url: str = TAIFA_URL, transport: httpx.BaseTransport | None = None):
-        self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, api_key: str, base_url: str = TAIFA_URL, transport: httpx.BaseTransport | None = None,
+                 sender: str | None = None):
+        self.api_key = _unquote(api_key)
+        self.url = base_url
+        self.sender = _unquote(sender) or DEFAULT_SENDER
         self.client = httpx.Client(timeout=20, transport=transport)
 
     def send(self, phone: str, text: str, service_name: str | None) -> SendResult:
-        payload = taifa_encrypt(php_json({"message": text, "recepients": phone}), self.api_key)
-        body = {"message": payload, "key": self.api_key, "service_name": service_name}
+        body = {"mobile": phone, "sender_name": _unquote(service_name) or self.sender, "message": text,
+                "response_type": "json"}
         try:
-            r = self.client.post(f"{self.base_url}/sms/", json=body)
+            r = self.client.post(self.url, json=body,
+                                 headers={"h_api_key": self.api_key, "Content-Type": "application/json"})
         except httpx.TimeoutException:
             # It may have gone out. Never retry automatically: a member must not get the same SMS twice.
-            return SendResult("unknown", description="No reply from Taifa Mobile in time; check delivery before resending")
+            return SendResult("unknown", description="Taifa unreachable: no reply in time; check delivery before resending")
         except httpx.HTTPError as e:
-            return SendResult("failed", description=f"Could not reach Taifa Mobile: {type(e).__name__}")
-        try:
-            data = r.json()
-        except ValueError:
-            return SendResult("unknown", description=f"Unreadable reply from Taifa Mobile (HTTP {r.status_code})")
-        code = str(data.get("status", ""))
-        desc = data.get("statusDescription") or TAIFA_STATUS.get(code, "Unknown status")
-        if code == "00":
-            return SendResult("sent", data.get("messageId"), code, desc)
-        return SendResult("failed", data.get("messageId"), code, TAIFA_STATUS.get(code, desc))
+            return SendResult("failed", description=f"Taifa unreachable: {type(e).__name__}")
+        row, error = taifa_reply(r.text)
+        msg_id = str(row["message_id"])[:64] if row.get("message_id") is not None else None
+        code = ("" if row.get("status_code") is None else str(row["status_code"]))[:10]  # fits the columns
+        if error:
+            return SendResult("failed", msg_id, code or None, error[:300])
+        return SendResult("sent", msg_id, code, str(row.get("status_desc") or "Success")[:300])
 
 
 def provider_from_env():
@@ -111,10 +113,10 @@ def provider_from_env():
     if kind == "simulate":
         return SimulatedProvider()
     if kind == "taifa":
-        key = os.getenv("SAWAZI_TAIFA_API_KEY")
+        key = _unquote(os.getenv("TAIFA_API_KEY")) or _unquote(os.getenv("SAWAZI_TAIFA_API_KEY"))
         if not key:
-            raise RuntimeError("SAWAZI_SMS_PROVIDER=taifa needs SAWAZI_TAIFA_API_KEY")
-        return TaifaProvider(key, os.getenv("SAWAZI_TAIFA_URL", TAIFA_URL))
+            raise RuntimeError("SAWAZI_SMS_PROVIDER=taifa needs TAIFA_API_KEY (or SAWAZI_TAIFA_API_KEY)")
+        return TaifaProvider(key, os.getenv("SAWAZI_TAIFA_URL") or TAIFA_URL, sender=os.getenv("TAIFA_SENDER_ID"))
     raise RuntimeError(f"unknown SAWAZI_SMS_PROVIDER '{kind}' (use simulate or taifa)")
 
 

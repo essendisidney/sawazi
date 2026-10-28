@@ -87,11 +87,11 @@ multiplier itself is set per product on the console's Products page.
 
 ## 4. Taifa Mobile SMS
 
-Sawazi sends numbers as `2547XXXXXXXX`; Taifa's own example uses `07XXXXXXXX`. Their library uses only the first 16
-characters of the API key for encryption.
+Sawazi sends numbers as `2547XXXXXXXX` through Taifa's API v2 (`/v2/sms/sendsms`, `h_api_key` header), the same
+call that sends live SMS for the founder's other apps. The old encrypted clientapi is retired.
 
-1. Confirm both with Taifa (see the email below).
-2. Set `SAWAZI_SMS_PROVIDER=taifa`, `SAWAZI_TAIFA_API_KEY`, `SAWAZI_SMS_CALLBACK_TOKEN`.
+1. Ask Taifa to register the SACCO's sender name; until then leave the service name empty (sender `SIDNET`).
+2. Set `SAWAZI_SMS_PROVIDER=taifa`, `TAIFA_API_KEY`, `TAIFA_SENDER_ID=SIDNET`, `SAWAZI_SMS_CALLBACK_TOKEN`.
 3. Register the delivery, subscription and incoming callback URLs with Taifa (see the README).
 4. Switch SMS on for the institution: console or `PUT /institutions/{id}/sms/settings`.
 5. Approve **one** reminder to your own number.
@@ -141,7 +141,7 @@ The institution's paybill in Sawazi must equal the shortcode, or callbacks are a
 | `SAWAZI_API_KEY` | Pesara platform key: create institutions and their first admin |
 | `SAWAZI_PUBLIC_URL` | HTTPS address members open guarantor links on |
 | `SAWAZI_SMS_PROVIDER` | `simulate` (default) or `taifa` |
-| `SAWAZI_TAIFA_API_KEY`, `SAWAZI_TAIFA_URL` | Taifa Mobile SMS key (URL has a default) |
+| `TAIFA_API_KEY` (or `SAWAZI_TAIFA_API_KEY`), `TAIFA_SENDER_ID`, `SAWAZI_TAIFA_URL` | Taifa Mobile SMS key, default sender (SIDNET), full v2 send URL override (has a default) |
 | `SAWAZI_SMS_CALLBACK_TOKEN` | Secret in Taifa's SMS callback URLs |
 | `SAWAZI_DARAJA_CALLBACK_TOKEN`, `SAWAZI_DARAJA_ALLOWED_IPS` | Daraja C2B callbacks: secret URL and optional IP allowlist |
 | `SAWAZI_DARAJA_ENV`, `SAWAZI_DARAJA_CONSUMER_KEY`, `SAWAZI_DARAJA_CONSUMER_SECRET` | For `scripts/daraja_register.py` only |
@@ -162,10 +162,9 @@ Secrets go in environment variables or `.env` (gitignored), never in code.
 > We are integrating Sawazi (by Pesara) with Taifa Mobile for SMS and USSD, for SACCOs in Kenya. Before going live,
 > could you confirm the following?
 >
-> **SMS (clientapi/sms)**
-> 1. Recipient format: we send `2547XXXXXXXX`. Your library example uses `07XXXXXXXX`. Are both accepted?
-> 2. API key: your PHP library uses the first 16 characters of the API key for the AES-128 encryption. Is that how
->    your server reads it, whatever the key's length?
+> **SMS (API v2)**
+> 1. Please register our sender name for each SACCO (we use SIDNET until then).
+> 2. Is there a per-message delivery report for API v2 messages, keyed by `message_id`?
 > 3. Can the delivery report, subscription and incoming message callback URLs be set per account, or per service?
 >
 > **USSD**

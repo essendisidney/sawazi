@@ -108,7 +108,7 @@ Owner: Sidney Essendi (product + domain lead, 15+ years SACCO/MFI core banking).
 ## Phase 1 — done
 1. Staff auth DONE: users, roles, per-institution scoping, per-institution API keys (`sawazi/auth.py`, role matrix in `PERMISSIONS`, human-only actions in `HUMAN_ONLY`)
 2. Audit log DONE (`sawazi/audit.py`)
-3. SMS DONE via Taifa Mobile (`sawazi/sms.py`; no Taifa sandbox, so `simulate` is the default provider). Delivery callbacks, opt-outs, staff-approval-only sending. Left: confirm with Taifa the number format (we send 2547XXXXXXXX) and API key length before the first live send
+3. SMS DONE via Taifa Mobile (`sawazi/sms.py`; no Taifa sandbox, so `simulate` is the default provider). Delivery callbacks, opt-outs, staff-approval-only sending. Uses Taifa API v2 (`/v2/sms/sendsms`, `h_api_key`; env `TAIFA_API_KEY`, `TAIFA_SENDER_ID` default SIDNET); the encrypted clientapi is retired. Left: one live send to our own number
 4. Daraja C2B DONE (`sawazi/daraja.py`, `scripts/daraja_register.py`). Validation always accepts; statement uploads confirm every callback. Left: test against the Daraja sandbox; if Safaricom sends hashed MSISDNs, consider matching on the hash of member phones
 5. Staff web console DONE (`sawazi/console/`, run `scripts/console_demo.py`), including the Admin page (staff,
    API keys, SMS settings and opt-outs, member app access, audit log)
